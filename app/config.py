@@ -1,0 +1,132 @@
+"""Configuration loading/saving for Anastasia (Anna)."""
+
+import json
+from pathlib import Path
+from typing import Dict, List
+
+from pydantic import BaseModel, Field
+
+APP_DIR = Path(__file__).resolve().parent
+DATA_DIR = APP_DIR / "data"
+CONFIG_PATH = DATA_DIR / "config.json"
+MEMORY_PATH = DATA_DIR / "memory.json"
+HISTORY_DB_PATH = DATA_DIR / "history.sqlite"
+
+
+def _default_safe_folders() -> List[str]:
+    home = Path.home()
+    return [str(home / name).replace("\\", "/")
+            for name in ("Desktop", "Downloads", "Documents", "Pictures", "Projects")]
+
+
+def _default_app_aliases() -> Dict[str, str]:
+    # Values are either an absolute exe path, a command resolvable via
+    # `start` (Windows App Paths / PATH), or a URI protocol like "msteams:".
+    # Absolute paths that don't exist fall back to a `start <stem>` launch.
+    return {
+        "notepad": "notepad.exe",
+        "paint": "mspaint.exe",
+        "mspaint": "mspaint.exe",
+        "chrome": "C:/Program Files/Google/Chrome/Application/chrome.exe",
+        "edge": "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+        "vscode": "code",
+        "vs code": "code",
+        "file explorer": "explorer.exe",
+        "explorer": "explorer.exe",
+        "calculator": "calc.exe",
+        "calc": "calc.exe",
+        "terminal": "wt.exe",
+        "powershell": "powershell.exe",
+        "teams": "msteams:",
+    }
+
+
+# Old default values -> new defaults. Applied only when the stored value still
+# equals the old default, so user customizations always win.
+_DEFAULT_MIGRATIONS = {
+    "ollama_model": ("qwen3:4b", "llama3.2:3b"),
+    "ollama_timeout": (120, 20),
+    "silence_seconds": (1.6, 1.2),
+    "max_record_seconds": (30, 8),
+}
+
+
+class AppConfig(BaseModel):
+    """All user-tunable settings. Persisted to app/data/config.json."""
+
+    model_config = {"extra": "ignore"}
+
+    # Identity
+    assistant_name: str = "Anastasia"
+    assistant_nickname: str = "Anna"
+
+    # LLM (Ollama)
+    ollama_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3.2:3b"
+    ollama_timeout: int = 20
+    ollama_keep_alive: str = "30m"   # keeps the model loaded between requests
+    ollama_num_predict: int = 220    # hard cap on generated tokens
+    ollama_num_ctx: int = 2048
+
+    # Voice
+    voice_enabled: bool = True
+    wake_word_enabled: bool = False
+    push_to_talk_hotkey: str = "ctrl+alt+space"
+
+    # STT
+    stt_backend: str = "faster_whisper"  # "faster_whisper" | "whisper_cpp"
+    faster_whisper_model: str = "base"   # tiny | base | small ...
+    whisper_cpp_exe: str = ""            # path to whisper.cpp main/whisper-cli exe
+    whisper_cpp_model: str = ""          # path to ggml model file
+    sample_rate: int = 16000
+    silence_auto_stop: bool = True
+    silence_threshold: float = 0.012     # RMS on 0..1 scale
+    silence_seconds: float = 1.2
+    max_record_seconds: int = 8
+
+    # TTS
+    tts_backend: str = "auto"            # "auto" | "piper" | "windows" | "off"
+    piper_exe: str = ""                  # path to piper.exe
+    piper_voice: str = ""                # path to .onnx voice model
+
+    # Safety / behavior
+    confirmation_mode: str = "strict"    # "strict" | "normal"
+    max_type_text_no_confirm: int = 500
+
+    # UI
+    animation_quality: str = "medium"    # "low" | "medium" | "high"
+
+    # Tools
+    default_browser: str = ""            # empty = system default; or alias key e.g. "chrome"
+    screenshot_dir: str = str(Path.home() / "Pictures" / "AnnaScreenshots").replace("\\", "/")
+    safe_folders: List[str] = Field(default_factory=_default_safe_folders)
+    app_aliases: Dict[str, str] = Field(default_factory=_default_app_aliases)
+
+    # ---------------------------------------------------------------
+    @classmethod
+    def load(cls, path: Path = CONFIG_PATH) -> "AppConfig":
+        """Load config.json, creating it with defaults on first run.
+        Older configs are migrated in place: outdated default values are
+        replaced and newly added alias keys merged, without touching
+        anything the user customized."""
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                for key, (old, new) in _DEFAULT_MIGRATIONS.items():
+                    if data.get(key) == old:
+                        data[key] = new
+                aliases = data.get("app_aliases")
+                if isinstance(aliases, dict):
+                    for key, value in _default_app_aliases().items():
+                        aliases.setdefault(key, value)
+                cfg = cls(**data)
+            except Exception:
+                cfg = cls()  # corrupt config -> fall back to defaults, don't crash
+        else:
+            cfg = cls()
+        cfg.save(path)
+        return cfg
+
+    def save(self, path: Path = CONFIG_PATH) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self.model_dump(), indent=2), encoding="utf-8")

@@ -1,0 +1,26 @@
+# Anastasia (Anna) — local voice assistant
+# Python 3.10+ (tested on 3.13)
+
+# GUI
+customtkinter>=5.2
+
+# Core
+pydantic>=2.5
+requests>=2.31
+
+# Voice input + STT
+sounddevice>=0.4.6
+numpy>=1.26
+faster-whisper>=1.0        # downloads the Whisper model on first use (CPU, int8)
+
+# Computer control
+pyautogui>=0.9.54
+pyperclip>=1.8
+Pillow>=10.0               # screenshots
+keyboard>=0.13.5           # global push-to-talk hotkey
+
+# Dev / tests
+pytest>=8.0
+
+# Optional — uncomment if you want wake-word mode ("Hey Jarvis"):
+# openwakeword>=0.6
