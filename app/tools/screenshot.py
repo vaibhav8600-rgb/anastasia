@@ -15,4 +15,4 @@ def take_screenshot(args: dict, ctx: ToolContext) -> ToolResult:
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"anna_{datetime.now():%Y%m%d_%H%M%S}.png"
     ImageGrab.grab().save(str(path), "PNG")
-    return ToolResult(True, f"Screenshot saved to {path}.", data=str(path))
+    return ToolResult(True, "Screenshot captured.", data=str(path))

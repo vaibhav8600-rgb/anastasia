@@ -38,6 +38,7 @@ class PipelineUI(Protocol):
 
     def show_user(self, text: str) -> None: ...
     def show_anna(self, text: str) -> None: ...
+    def show_result(self, text: str, action: dict) -> None: ...
     def show_error(self, text: str) -> None: ...
     def show_info(self, text: str) -> None: ...
     def set_state(self, state: str, detail: str = "") -> None: ...
@@ -224,7 +225,11 @@ class CommandPipeline:
 
         msg = result.message or plan.assistant_message or "Done."
         if result.success:
-            self.ui.show_anna(msg)
+            # Structured payload so the frontend can render a result card
+            # (e.g. screenshot preview with View/Copy/Save).
+            self.ui.show_result(msg, {"intent": plan.intent,
+                                      "success": True,
+                                      "data": result.data})
         else:
             self.ui.show_error(msg)
         self.history.log(transcript, plan, safety, executed=result.success,

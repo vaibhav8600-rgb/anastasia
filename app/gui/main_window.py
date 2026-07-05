@@ -4,7 +4,7 @@ big mic button, confirmation panel and text input for testing."""
 import customtkinter as ctk
 
 from app.gui.confirmation_dialog import ConfirmationPanel
-from app.gui.state_widgets import StatusCard, Transcript
+from app.gui.state_widgets import DevToolsPanel, SetupCard, StatusCard, Transcript
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("dark-blue")
@@ -36,9 +36,13 @@ class MainWindow(ctk.CTk):
         # --- confirmation panel (hidden until needed) -----------------------
         self.confirm_panel = ConfirmationPanel(self)
 
+        # --- setup card (hidden unless something critical is missing) --------
+        self.setup_card = SetupCard(self)
+
         # --- controls -------------------------------------------------------
         controls = ctk.CTkFrame(self, fg_color="transparent")
         controls.pack(fill="x", padx=16, pady=(0, 6))
+        self._controls = controls
 
         self.mic_btn = ctk.CTkButton(
             controls, text="🎤", width=84, height=84, corner_radius=42,
@@ -74,11 +78,19 @@ class MainWindow(ctk.CTk):
                       command=controller.show_history).pack(side="left", padx=(0, 8))
         ctk.CTkButton(row2, text="🧹 Clear history", width=110,
                       fg_color="#334155", hover_color="#1e293b",
-                      command=controller.clear_history).pack(side="left")
+                      command=controller.clear_history).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(row2, text="</> Dev tools", width=100,
+                      fg_color="#334155", hover_color="#1e293b",
+                      command=self.toggle_devtools).pack(side="left")
+
+        # --- developer tools (collapsed by default) ---------------------------
+        self.devtools = DevToolsPanel(self)
+        self._devtools_visible = False
 
         # --- text input (manual command entry for testing) --------------------
         input_row = ctk.CTkFrame(self, fg_color="transparent")
         input_row.pack(fill="x", padx=16, pady=(0, 14))
+        self._input_row = input_row
         self.entry = ctk.CTkEntry(
             input_row, placeholder_text=f"Type a command for {cfg.assistant_nickname}…",
             height=38)
@@ -110,6 +122,20 @@ class MainWindow(ctk.CTk):
             self.wake_switch.select()
         else:
             self.wake_switch.deselect()
+
+    def show_setup_card(self, issues: list, on_recheck) -> None:
+        self.setup_card.show(issues, on_recheck, before=self._controls)
+
+    def hide_setup_card(self) -> None:
+        self.setup_card.hide()
+
+    def toggle_devtools(self) -> None:
+        if self._devtools_visible:
+            self.devtools.pack_forget()
+        else:
+            self.devtools.pack(fill="x", padx=16, pady=(0, 6),
+                               before=self._input_row)
+        self._devtools_visible = not self._devtools_visible
 
     def show_history_window(self, rows: list) -> None:
         win = ctk.CTkToplevel(self)

@@ -69,4 +69,4 @@ def open_app(args: dict, ctx: ToolContext) -> ToolResult:
         from app.agent.devlog import devlog
         devlog.exception(e, context=f"open_app '{name}' ({command})")
         return ToolResult(False, f"I couldn't launch {name} — is it installed?")
-    return ToolResult(True, f"Opened {name} for you.")
+    return ToolResult(True, f"Done — I opened {name.title()} for you.")

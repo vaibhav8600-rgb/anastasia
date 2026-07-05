@@ -1,6 +1,8 @@
-"""Status card + chat transcript widgets."""
+"""Status card, chat transcript, setup card and developer tools widgets."""
 
 import customtkinter as ctk
+
+from app.agent.devlog import devlog
 
 STATES = {
     "idle":                 ("●", "#6b7280", "Idle — ready when you are"),
@@ -73,3 +75,74 @@ class Transcript(ctk.CTkTextbox):
         tb = getattr(self, "_textbox", self)
         tb.delete("1.0", "end")
         self.configure(state="disabled")
+
+
+class SetupCard(ctk.CTkFrame):
+    """One clean card for critical startup problems (spec sec 18).
+    Hidden when everything is healthy."""
+
+    def __init__(self, master, **kwargs):
+        super().__init__(master, corner_radius=12, border_width=2,
+                         border_color="#fbbf24", **kwargs)
+        ctk.CTkLabel(self, text="⚠ Setup needed",
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(
+            anchor="w", padx=14, pady=(8, 0))
+        self.message_lbl = ctk.CTkLabel(self, text="", anchor="w", justify="left",
+                                        wraplength=620, text_color="#fcd34d",
+                                        font=ctk.CTkFont(size=12))
+        self.message_lbl.pack(fill="x", padx=14, pady=(2, 0))
+        self.recheck_btn = ctk.CTkButton(self, text="Recheck", width=90,
+                                         fg_color="#334155", hover_color="#1e293b")
+        self.recheck_btn.pack(anchor="w", padx=14, pady=(6, 10))
+        self._pack_kwargs = {}
+
+    def show(self, issues: list, on_recheck, **pack_kwargs) -> None:
+        self.message_lbl.configure(text="\n".join(f"• {i}" for i in issues))
+        self.recheck_btn.configure(command=on_recheck)
+        self._pack_kwargs = pack_kwargs or self._pack_kwargs
+        self.pack(fill="x", padx=16, pady=(0, 6), **self._pack_kwargs)
+
+    def hide(self) -> None:
+        self.pack_forget()
+
+
+class DevToolsPanel(ctk.CTkFrame):
+    """Collapsible developer log view — every diagnostic line lives here,
+    never in the chat (spec sec 5). Subscribes to the devlog."""
+
+    def __init__(self, master, **kwargs):
+        super().__init__(master, corner_radius=12, **kwargs)
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.pack(fill="x", padx=10, pady=(6, 0))
+        ctk.CTkLabel(header, text="</> Developer tools", text_color="#94a3b8",
+                     font=ctk.CTkFont(size=12, weight="bold")).pack(side="left")
+        ctk.CTkButton(header, text="Clear", width=60, height=22,
+                      fg_color="#334155", hover_color="#1e293b",
+                      command=self._clear).pack(side="right")
+        self.box = ctk.CTkTextbox(self, wrap="none", height=170,
+                                  font=ctk.CTkFont(size=11, family="Consolas"))
+        self.box.pack(fill="both", expand=True, padx=10, pady=(4, 8))
+        self.box.configure(state="disabled")
+        for entry in devlog.entries():
+            self._append(entry)
+        devlog.subscribe(self._on_entry)
+
+    def _on_entry(self, entry: dict) -> None:
+        try:  # marshal onto the GUI thread; window may be closing
+            self.after(0, lambda: self._append(entry))
+        except Exception:
+            pass
+
+    def _append(self, entry: dict) -> None:
+        self.box.configure(state="normal")
+        tb = getattr(self.box, "_textbox", self.box)
+        tb.insert("end", f"[{entry['ts']}] [{entry['category']}] {entry['message']}\n")
+        self.box.configure(state="disabled")
+        self.box.see("end")
+
+    def _clear(self) -> None:
+        devlog.clear()
+        self.box.configure(state="normal")
+        tb = getattr(self.box, "_textbox", self.box)
+        tb.delete("1.0", "end")
+        self.box.configure(state="disabled")

@@ -25,12 +25,14 @@ class FakePipelineUI:
 
     def __init__(self):
         self.users, self.annas, self.errors, self.infos = [], [], [], []
+        self.results = []                 # (text, action) tuples
         self.states = []
         self.confirmations = []
         self.hidden = 0
 
     def show_user(self, text): self.users.append(text)
     def show_anna(self, text): self.annas.append(text)
+    def show_result(self, text, action): self.results.append((text, action))
     def show_error(self, text): self.errors.append(text)
     def show_info(self, text): self.infos.append(text)
     def set_state(self, state, detail=""): self.states.append(state)
@@ -40,7 +42,8 @@ class FakePipelineUI:
 
     @property
     def all_messages(self):
-        return self.users + self.annas + self.errors + self.infos
+        return (self.users + self.annas + self.errors + self.infos
+                + [text for text, _ in self.results])
 
 
 class FakeSpeech:
@@ -142,6 +145,8 @@ class FakeMainUI:
         self.states = []
         self.mic_active = None
         self.wake_switch_on = None
+        self.setup_cards = []             # issue lists shown
+        self.setup_card_hidden = 0
 
     def after(self, _ms, fn): fn()
     def add_user(self, t): self.messages["user"].append(t)
@@ -151,6 +156,8 @@ class FakeMainUI:
     def set_state(self, s, d=""): self.states.append(s)
     def set_mic_active(self, a): self.mic_active = a
     def set_wake_switch(self, on): self.wake_switch_on = on
+    def show_setup_card(self, issues, on_recheck): self.setup_cards.append(list(issues))
+    def hide_setup_card(self): self.setup_card_hidden += 1
     def show(self, *a, **k): pass
     def hide(self): pass
     def clear(self): pass

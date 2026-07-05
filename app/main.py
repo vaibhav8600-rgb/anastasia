@@ -16,6 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.agent.conversation import Conversation
 from app.agent.devlog import devlog
 from app.agent.history import History
 from app.agent.memory import Memory
@@ -40,6 +41,7 @@ class Controller:
         self.memory = memory if memory is not None else Memory()
         self.history = history if history is not None else History()
         self.agent = Agent(self.config, self.memory, self.history)
+        self.conversation = Conversation()
         self.recorder = Recorder(self.config)
         self.speech = SpeechOutput(self.config,
                                    on_speaking_changed=self._on_speaking_changed)
@@ -75,15 +77,27 @@ class Controller:
             pass  # window closing
 
     def show_user(self, text: str) -> None:
+        self.conversation.add("user", text)
         self._ui(self.ui.transcript.add_user, text)
 
     def show_anna(self, text: str) -> None:
+        self.conversation.add("anna", text)
         self._ui(self.ui.transcript.add_assistant, text, self.config.assistant_nickname)
 
+    def show_result(self, text: str, action: dict) -> None:
+        """Successful action result — carries a payload for result cards."""
+        self.conversation.add("anna", text, action=action)
+        self._ui(self.ui.transcript.add_assistant, text, self.config.assistant_nickname)
+        data = action.get("data")
+        if action.get("intent") == "take_screenshot" and data:
+            self._ui(self.ui.transcript.add_info, f"Saved to {data}")
+
     def show_error(self, text: str) -> None:
+        self.conversation.add("error", text)
         self._ui(self.ui.transcript.add_error, text)
 
     def show_info(self, text: str) -> None:
+        self.conversation.add("info", text)
         self._ui(self.ui.transcript.add_info, text)
 
     def set_state(self, state: str, detail: str = "") -> None:
@@ -104,39 +118,64 @@ class Controller:
 
     # ------------------------------------------------------- startup
     def _startup_checks(self) -> None:
+        """Clean welcome (sec 18): two friendly lines in chat, every technical
+        detail in the devlog, critical problems in ONE setup card."""
         nick = self.config.assistant_nickname
-        self.show_info(f"Hi, I'm {nick} 💜 — press the mic "
-                       f"(or {self.config.push_to_talk_hotkey}) and talk to me, or type below.")
+        user = ""
+        try:
+            user = str(self.memory.get("user_name", "") or "").strip()
+        except Exception:
+            pass
+        greeting = f"Hi {user}, I'm {nick} 💜" if user else f"Hi, I'm {nick} 💜"
+        self.show_anna(f"{greeting}\nI'm ready when you are.")
+        devlog.log(f"Push-to-talk hotkey: {self.config.push_to_talk_hotkey}")
+        self.run_health_checks()
+
+    def run_health_checks(self) -> None:
+        """Run/re-run dependency checks. Also wired to the setup card's
+        Recheck button."""
+        issues = []
         if self.agent.llm.is_available():
             models = self.agent.llm.list_models()
             if any(self.config.ollama_model in m for m in models):
-                self.show_info(f"Ollama is running (model: {self.config.ollama_model}).")
-                devlog.log("Warming up the model so the first command is fast...")
+                devlog.log(f"Ollama running (model: {self.config.ollama_model}). "
+                           "Warming up so the first command is fast...")
                 from app.llm.prompt_builder import build_intent_messages
                 ms = self.agent.llm.warm_up(
                     build_intent_messages("hello", self.config, self.memory))
                 devlog.log(f"Model warm-up done in {ms:.0f}ms." if ms is not None
                            else "Model warm-up failed (will load on first use).")
             else:
-                self.show_error(
-                    f"Ollama is running but '{self.config.ollama_model}' isn't installed. "
-                    f"Run: ollama pull {self.config.ollama_model}")
+                issues.append(f"Ollama is running but '{self.config.ollama_model}' "
+                              f"isn't installed. Run: ollama pull {self.config.ollama_model}")
         else:
-            self.show_error(
-                "Ollama isn't running — simple commands still work, but natural "
-                "language needs it. Start the Ollama app or run `ollama serve`.")
+            issues.append("Ollama is not running. Simple local commands still work, "
+                          "but chat/reasoning needs Ollama.")
 
-        # Dependency details are developer information, not conversation.
         from app.voice.stt_whisper import backend_ready
         ok, msg = backend_ready(self.config)
-        devlog.log(msg) if ok else devlog.warn(msg)
-        if not ok:
-            self.show_error(msg)
+        if ok:
+            devlog.log(msg)
+        else:
+            devlog.warn(msg)
+            issues.append("Voice input isn't ready yet — typing still works. "
+                          "(Details in Developer Tools.)")
         if not microphone_available():
-            self.show_error("No microphone found — voice input is disabled, but typing works.")
+            devlog.warn("No microphone detected.")
+            issues.append("No microphone found — voice input is disabled, but typing works.")
         from app.voice.tts_piper import piper_available
         if not piper_available(self.config):
             devlog.warn("Piper voice not configured — using the built-in Windows voice.")
+
+        if issues:
+            self._ui(self.ui.show_setup_card, issues, self._on_recheck)
+        else:
+            self._ui(self.ui.hide_setup_card)
+
+    def _on_recheck(self) -> None:
+        devlog.log("Recheck requested from the setup card.")
+        self._ui(self.ui.hide_setup_card)
+        threading.Thread(target=self.run_health_checks, daemon=True).start()
 
     @staticmethod
     def _warm_imports() -> None:
@@ -314,6 +353,7 @@ class Controller:
 
     def clear_history(self) -> None:
         self.history.clear()
+        self.conversation.clear()
         self.ui.transcript.clear()
         self.show_info("History cleared.")
 

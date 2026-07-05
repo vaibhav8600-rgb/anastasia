@@ -45,7 +45,7 @@ def open_folder(args: dict, ctx: ToolContext) -> ToolResult:
     # Fire-and-forget: os.startfile blocks for seconds when Explorer is cold.
     import subprocess
     subprocess.Popen(["explorer", str(folder)])
-    return ToolResult(True, f"Opened your {folder.name} folder.")
+    return ToolResult(True, f"There you go — your {folder.name} folder is open.")
 
 
 @tool("search_files")
