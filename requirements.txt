@@ -1,8 +1,8 @@
 # Anastasia (Anna) — local voice assistant
 # Python 3.10+ (tested on 3.13)
 
-# GUI
-customtkinter>=5.2
+# GUI (web frontend in an Edge WebView2 window)
+pywebview>=5.0
 
 # Core
 pydantic>=2.5

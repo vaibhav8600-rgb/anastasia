@@ -157,7 +157,7 @@ def test_controller_show_result_renders_card_and_path():
                             "data": "C:/shots/anna_1.png"})
 
     assert "Screenshot captured." in ui.messages["assistant"]
-    assert any("C:/shots/anna_1.png" in m for m in ui.messages["info"])
+    assert ui.results[0][1]["data"] == "C:/shots/anna_1.png"
     last = controller.conversation.snapshot()[-1]
     assert last["role"] == "anna"
     assert last["action"]["data"] == "C:/shots/anna_1.png"

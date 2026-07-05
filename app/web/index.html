@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anastasia (Anna)</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ============================== top bar ============================== -->
+<header id="topbar">
+  <div class="brand">
+    <div class="brand-orb"></div>
+    <h1>Anastasia <span class="dim">(Anna)</span></h1>
+  </div>
+  <div id="chips">
+    <div class="chip" id="chip-model" data-state="offline">
+      <svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
+      <span class="chip-label">Local model: —</span><i class="dot"></i>
+    </div>
+    <div class="chip" id="chip-mic" data-state="ok">
+      <svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+      <span class="chip-label">Mic: —</span><i class="dot"></i>
+    </div>
+    <div class="chip" id="chip-voice" data-state="warn">
+      <svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+      <span class="chip-label">Voice: —</span><i class="dot"></i>
+    </div>
+  </div>
+</header>
+
+<!-- ============================== sidebar ============================== -->
+<nav id="sidebar">
+  <ul class="nav">
+    <li class="nav-item active" data-nav="home">
+      <svg viewBox="0 0 24 24"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+      Home</li>
+    <li class="nav-item" data-nav="conversations">
+      <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      Conversations</li>
+    <li class="nav-item" data-nav="skills">
+      <svg viewBox="0 0 24 24"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/></svg>
+      Skills <span class="soon">soon</span></li>
+    <li class="nav-item" data-nav="automations">
+      <svg viewBox="0 0 24 24"><rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/></svg>
+      Automations <span class="soon">soon</span></li>
+    <li class="nav-item" data-nav="memory">
+      <svg viewBox="0 0 24 24"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/></svg>
+      Memory <span class="soon">soon</span></li>
+    <li class="nav-item" data-nav="settings">
+      <svg viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+      Settings</li>
+  </ul>
+
+  <div class="sidebar-bottom">
+    <div id="status-card">
+      <div class="status-heading">ANNA STATUS</div>
+      <div id="status-word">Ready <span class="heart">💙</span></div>
+      <div id="status-sub">Always here to help.</div>
+      <div class="mini-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    </div>
+    <button id="devtools-btn" class="ghost-btn wide">
+      <svg viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+      Developer tools
+      <svg class="chev" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+    </button>
+  </div>
+</nav>
+
+<!-- ============================== center hero ============================== -->
+<main id="hero">
+  <div id="setup-card" class="hidden">
+    <div class="setup-title">⚠ Setup needed</div>
+    <ul id="setup-issues"></ul>
+    <button id="recheck-btn" class="ghost-btn">Recheck</button>
+  </div>
+
+  <div id="core" data-state="ready">
+    <div class="ring ring-outer"></div>
+    <div class="ring ring-mid"></div>
+    <div class="ring ring-dotted"></div>
+    <div id="core-inner">
+      <img id="avatar" src="assets/avatar.png" alt="">
+      <div id="avatar-fallback"></div>
+    </div>
+  </div>
+
+  <div id="state-word">Ready</div>
+  <div id="state-sub">You can speak now or type a command.</div>
+</main>
+
+<!-- ============================== conversation ============================== -->
+<aside id="conversation-panel">
+  <div class="conv-header">
+    <h2>Conversation</h2>
+    <button id="clear-btn" class="ghost-btn">
+      <svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+      Clear</button>
+  </div>
+  <div id="messages"></div>
+</aside>
+
+<!-- ============================== bottom bar ============================== -->
+<footer id="bottombar">
+  <div class="bottom-left">
+    <div class="toggle-row">
+      <div class="toggle-card">
+        <div><div class="toggle-title">Wake word</div><div class="toggle-sub">"Hey Anna"</div></div>
+        <label class="switch"><input type="checkbox" id="toggle-wake"><span class="slider"></span></label>
+      </div>
+      <div class="toggle-card">
+        <div><div class="toggle-title">Voice replies</div><div class="toggle-sub">Spoken responses</div></div>
+        <label class="switch"><input type="checkbox" id="toggle-voice"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="ghost-btn" id="settings-btn">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/></svg>
+        Settings</button>
+      <button class="ghost-btn" id="history-btn">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        History</button>
+      <button class="ghost-btn" id="shortcuts-btn">
+        <svg viewBox="0 0 24 24"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.01"/><path d="M10 8h.01"/><path d="M14 8h.01"/><path d="M18 8h.01"/><path d="M8 12h.01"/><path d="M12 12h.01"/><path d="M16 12h.01"/><path d="M7 16h10"/></svg>
+        Shortcuts</button>
+    </div>
+  </div>
+
+  <div class="bottom-center">
+    <div class="wave wave-l"><i></i><i></i><i></i><i></i><i></i></div>
+    <button id="mic-btn" title="Push to talk">
+      <svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+    </button>
+    <div class="wave wave-r"><i></i><i></i><i></i><i></i><i></i></div>
+  </div>
+
+  <div class="bottom-right">
+    <div class="input-row">
+      <input id="cmd-input" type="text" placeholder="Type a command or message..."
+             autocomplete="off" spellcheck="false">
+      <button id="send-btn" title="Send">
+        <svg viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+      </button>
+    </div>
+    <div class="hint">
+      <svg viewBox="0 0 24 24"><path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/></svg>
+      Press <b id="hint-hotkey">Ctrl + Alt + Space</b> to talk
+    </div>
+  </div>
+</footer>
+
+<!-- ============================== dev tools drawer ============================== -->
+<div id="devtools" class="hidden">
+  <div class="dev-header">
+    <span>&lt;/&gt; Developer tools</span>
+    <span id="dev-latency" class="dev-latency"></span>
+    <div>
+      <button class="ghost-btn" id="dev-clear">Clear</button>
+      <button class="ghost-btn" id="dev-close">Close</button>
+    </div>
+  </div>
+  <div id="dev-log"></div>
+</div>
+
+<!-- ============================== modals ============================== -->
+<div id="modal-backdrop" class="hidden">
+  <div id="modal">
+    <div class="modal-header"><h3 id="modal-title"></h3>
+      <button class="ghost-btn" id="modal-close">✕</button></div>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

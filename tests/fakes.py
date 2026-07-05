@@ -36,8 +36,8 @@ class FakePipelineUI:
     def show_error(self, text): self.errors.append(text)
     def show_info(self, text): self.infos.append(text)
     def set_state(self, state, detail=""): self.states.append(state)
-    def ask_confirmation(self, transcript, plan, safety):
-        self.confirmations.append((transcript, plan, safety))
+    def ask_confirmation(self, action_id, transcript, plan, safety):
+        self.confirmations.append((action_id, transcript, plan, safety))
     def hide_confirmation(self): self.hidden += 1
 
     @property
@@ -142,6 +142,7 @@ class FakeMainUI:
         self.transcript = self
         self.confirm_panel = self
         self.messages = {"user": [], "assistant": [], "info": [], "error": []}
+        self.results = []                 # (text, action) result cards
         self.states = []
         self.mic_active = None
         self.wake_switch_on = None
@@ -151,6 +152,9 @@ class FakeMainUI:
     def after(self, _ms, fn): fn()
     def add_user(self, t): self.messages["user"].append(t)
     def add_assistant(self, t, name=""): self.messages["assistant"].append(t)
+    def add_result(self, t, action):
+        self.messages["assistant"].append(t)
+        self.results.append((t, action))
     def add_info(self, t): self.messages["info"].append(t)
     def add_error(self, t): self.messages["error"].append(t)
     def set_state(self, s, d=""): self.states.append(s)

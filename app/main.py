@@ -51,10 +51,11 @@ class Controller:
         self._mic_lock = threading.Lock()
         self._stt_generation = 0           # bumped to drop stale STT results
         self._record_source = "voice"
+        self.last_state = "ready"          # for full_state re-hydration
+        self.chips = {}                    # top-bar status chips
 
         if ui is None:
-            from app.gui.main_window import MainWindow
-            ui = MainWindow(self)
+            raise ValueError("Controller requires a ui (UIBridge or test fake).")
         self.ui = ui
 
         self.pipeline = CommandPipeline(
@@ -87,10 +88,7 @@ class Controller:
     def show_result(self, text: str, action: dict) -> None:
         """Successful action result — carries a payload for result cards."""
         self.conversation.add("anna", text, action=action)
-        self._ui(self.ui.transcript.add_assistant, text, self.config.assistant_nickname)
-        data = action.get("data")
-        if action.get("intent") == "take_screenshot" and data:
-            self._ui(self.ui.transcript.add_info, f"Saved to {data}")
+        self._ui(self.ui.transcript.add_result, text, action)
 
     def show_error(self, text: str) -> None:
         self.conversation.add("error", text)
@@ -101,10 +99,11 @@ class Controller:
         self._ui(self.ui.transcript.add_info, text)
 
     def set_state(self, state: str, detail: str = "") -> None:
+        self.last_state = state
         self._ui(self.ui.set_state, state, detail)
 
-    def ask_confirmation(self, transcript: str, plan, safety) -> None:
-        self._ui(self.ui.confirm_panel.show, transcript, plan, safety,
+    def ask_confirmation(self, action_id: int, transcript: str, plan, safety) -> None:
+        self._ui(self.ui.confirm_panel.show, action_id, transcript, plan, safety,
                  self.approve_pending, self.cancel_pending, self.voice_confirm)
 
     def hide_confirmation(self) -> None:
@@ -132,12 +131,15 @@ class Controller:
         self.run_health_checks()
 
     def run_health_checks(self) -> None:
-        """Run/re-run dependency checks. Also wired to the setup card's
-        Recheck button."""
+        """Run/re-run dependency checks. Builds the top-bar status chips and
+        the setup card. Also wired to the setup card's Recheck button."""
         issues = []
+        model_state = "offline"
         if self.agent.llm.is_available():
             models = self.agent.llm.list_models()
             if any(self.config.ollama_model in m for m in models):
+                model_state = "warming"
+                self._push_chips(model_state)
                 devlog.log(f"Ollama running (model: {self.config.ollama_model}). "
                            "Warming up so the first command is fast...")
                 from app.llm.prompt_builder import build_intent_messages
@@ -145,7 +147,9 @@ class Controller:
                     build_intent_messages("hello", self.config, self.memory))
                 devlog.log(f"Model warm-up done in {ms:.0f}ms." if ms is not None
                            else "Model warm-up failed (will load on first use).")
+                model_state = "connected"
             else:
+                model_state = "missing"
                 issues.append(f"Ollama is running but '{self.config.ollama_model}' "
                               f"isn't installed. Run: ollama pull {self.config.ollama_model}")
         else:
@@ -153,24 +157,42 @@ class Controller:
                           "but chat/reasoning needs Ollama.")
 
         from app.voice.stt_whisper import backend_ready
-        ok, msg = backend_ready(self.config)
-        if ok:
+        stt_ok, msg = backend_ready(self.config)
+        if stt_ok:
             devlog.log(msg)
         else:
             devlog.warn(msg)
             issues.append("Voice input isn't ready yet — typing still works. "
                           "(Details in Developer Tools.)")
-        if not microphone_available():
+        self._mic_ok = microphone_available()
+        if not self._mic_ok:
             devlog.warn("No microphone detected.")
             issues.append("No microphone found — voice input is disabled, but typing works.")
         from app.voice.tts_piper import piper_available
-        if not piper_available(self.config):
+        self._piper_ok = piper_available(self.config)
+        if not self._piper_ok:
             devlog.warn("Piper voice not configured — using the built-in Windows voice.")
 
+        self._push_chips(model_state)
         if issues:
             self._ui(self.ui.show_setup_card, issues, self._on_recheck)
         else:
             self._ui(self.ui.hide_setup_card)
+
+    def _push_chips(self, model_state: str) -> None:
+        """Top-bar chips: Local model / Mic / Voice (spec sec 4/18)."""
+        self.chips = {
+            "model": {"label": f"Local model: {self.config.ollama_model}",
+                      "state": model_state},
+            "mic": {"label": "Mic: Ready" if getattr(self, "_mic_ok", True)
+                    else "Mic: Missing",
+                    "state": "ok" if getattr(self, "_mic_ok", True) else "bad"},
+            "voice": {"label": "Voice: Piper" if getattr(self, "_piper_ok", False)
+                      else "Voice: Windows fallback",
+                      "state": "ok" if getattr(self, "_piper_ok", False) else "warn"},
+        }
+        if hasattr(self.ui, "dispatch"):
+            self.ui.dispatch("status", {"chips": self.chips})
 
     def _on_recheck(self) -> None:
         devlog.log("Recheck requested from the setup card.")
@@ -203,6 +225,16 @@ class Controller:
         self.pipeline.submit(text, source="typed")
 
     # ------------------------------------------------------- voice input
+    def start_ptt(self) -> None:
+        """js_api: begin push-to-talk recording (no-op if already on)."""
+        if not self.recorder.recording:
+            self.toggle_mic()
+
+    def stop_ptt(self) -> None:
+        """js_api: stop recording and transcribe (no-op if not recording)."""
+        if self.recorder.recording:
+            self.toggle_mic()
+
     def toggle_mic(self, source: str = "voice") -> None:
         with self._mic_lock:
             if not self.recorder.recording:
@@ -315,6 +347,9 @@ class Controller:
         try:
             self.wake_listener = WakeWordListener(self.config, self._on_wake)
             self.wake_listener.start()
+            if not self.config.wake_word_enabled:
+                self.config.wake_word_enabled = True
+                self.config.save()
             self._ui(self.ui.set_wake_switch, True)
             self.show_info('Wake word on — say "Hey Jarvis" (pre-trained model) to wake me.')
         except WakeWordUnavailable as e:
@@ -334,19 +369,102 @@ class Controller:
             self._ui(self.toggle_mic, "wake_word")
 
     # ------------------------------------------------------- misc UI actions
-    def toggle_voice(self) -> None:
-        self.config.voice_enabled = bool(self.ui.voice_switch.get())
-        self.config.save()
+    def set_toggle(self, name: str, value: bool) -> None:
+        """js_api: wake_word / voice switches. Python owns the state; the
+        frontend gets a toggle_sync echo so it can never drift."""
+        if name == "voice":
+            self.config.voice_enabled = bool(value)
+            self.config.save()
+            if not value:
+                self.speech.cancel()
+            self._sync_toggle("voice", self.config.voice_enabled)
+        elif name == "wake_word":
+            if value and self.wake_listener is None:
+                self.toggle_wake_word_on()   # syncs the switch itself
+            elif not value and self.wake_listener is not None:
+                self.toggle_wake_word()
+            else:
+                self._sync_toggle("wake_word", self.wake_listener is not None)
+        else:
+            devlog.warn(f"Unknown toggle from frontend: {name!r}")
+
+    def _sync_toggle(self, name: str, value: bool) -> None:
+        if hasattr(self.ui, "dispatch"):
+            self.ui.dispatch("toggle_sync", {"name": name, "value": bool(value)})
+
+    def send_full_state(self) -> None:
+        """Re-hydrate the (dumb) frontend from Python-owned state."""
+        if not hasattr(self.ui, "dispatch"):
+            return
+        self.ui.dispatch("full_state", {
+            "state": self.last_state,
+            "chips": self.chips,
+            "toggles": {"wake_word": self.wake_listener is not None,
+                        "voice": self.config.voice_enabled},
+            "conversation": self.conversation.snapshot(),
+            "devlog": devlog.entries(150),
+            "pending": self.pipeline.pending_payload(),
+            "hotkey": self.config.push_to_talk_hotkey,
+            "assistant": self.config.assistant_nickname,
+        })
+
+    def open_path(self, path: str) -> None:
+        """js_api: open a file/folder Anna produced (View buttons). Only
+        paths inside the screenshot dir or safe folders are allowed."""
+        import os
+        from pathlib import Path as P
+        target = P(path)
+        if not path or not target.exists():
+            return
+        roots = [P(self.config.screenshot_dir)] + \
+                [P(f) for f in self.config.safe_folders]
+        for root in roots:
+            try:
+                if target.resolve().is_relative_to(root.resolve()):
+                    os.startfile(str(target))  # noqa: S606 — whitelisted roots
+                    return
+            except (OSError, ValueError):
+                continue
+        devlog.warn(f"open_path refused (outside allowed roots): {path}")
 
     def open_settings(self) -> None:
-        from app.gui.settings_window import SettingsWindow
-        SettingsWindow(self.ui, self.config, self.memory, on_saved=self._on_settings_saved)
+        """js_api: send current (basic) settings to the frontend modal.
+        Voice/STT/TTS sections arrive in Phase 5."""
+        if hasattr(self.ui, "dispatch"):
+            self.ui.dispatch("settings", {
+                "user_name": str(self.memory.get("user_name", "") or ""),
+                "ollama_url": self.config.ollama_url,
+                "ollama_model": self.config.ollama_model,
+                "ollama_timeout": self.config.ollama_timeout,
+                "animation_quality": self.config.animation_quality,
+            })
 
-    def _on_settings_saved(self) -> None:
-        self.ui.title(f"{self.config.assistant_name} "
-                      f"({self.config.assistant_nickname}) — local voice assistant")
-        self.ui.hotkey_lbl.configure(text=f"Push-to-talk: {self.config.push_to_talk_hotkey}")
-        self.show_info("Settings saved. Some changes (hotkey) apply after restart.")
+    _SETTINGS_FIELDS = {"ollama_url": str, "ollama_model": str,
+                        "ollama_timeout": int, "animation_quality": str}
+
+    def save_settings(self, settings: dict) -> None:
+        """js_api: apply a whitelisted subset of settings, then recheck."""
+        changed = []
+        for key, cast in self._SETTINGS_FIELDS.items():
+            if key in settings:
+                try:
+                    value = cast(settings[key])
+                except (TypeError, ValueError):
+                    continue
+                if getattr(self.config, key) != value:
+                    setattr(self.config, key, value)
+                    changed.append(key)
+        if "user_name" in settings:
+            try:
+                self.memory.set("user_name", str(settings["user_name"]).strip())
+                changed.append("user_name")
+            except Exception:
+                pass
+        if changed:
+            self.config.save()
+            devlog.log(f"Settings changed: {', '.join(changed)}")
+            self.show_info("Settings saved.")
+            threading.Thread(target=self.run_health_checks, daemon=True).start()
 
     def show_history(self) -> None:
         self.ui.show_history_window(self.history.recent(50))
@@ -357,21 +475,63 @@ class Controller:
         self.ui.transcript.clear()
         self.show_info("History cleared.")
 
-    def on_close(self) -> None:
+    def shutdown(self) -> None:
+        """Release audio/db resources. Safe to call more than once."""
         try:
             if self.wake_listener:
                 self.wake_listener.stop()
+                self.wake_listener = None
             if self.recorder.recording:
                 self.recorder.cancel()
             self.speech.shutdown()
             self.history.close()
-        finally:
-            self.ui.destroy()
+        except Exception as e:
+            devlog.exception(e, context="shutdown")
+
+    def on_close(self) -> None:
+        self.shutdown()
+        self.ui.destroy()
+
+
+WEBVIEW2_LINK = "https://developer.microsoft.com/en-us/microsoft-edge/webview2/"
+
+
+def _webview2_error_box(detail: str) -> None:
+    """No WebView2 runtime -> a plain message box instead of a crash."""
+    message = ("Anna's interface needs the Microsoft Edge WebView2 runtime.\n\n"
+               f"Download it here:\n{WEBVIEW2_LINK}\n\n"
+               f"Technical detail: {detail[:300]}")
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, message,
+                                         "Anastasia (Anna) — setup needed", 0x10)
+    except Exception:
+        print(message)
 
 
 def main() -> None:
-    controller = Controller()
-    controller.ui.mainloop()
+    import webview
+
+    from app.web.bridge import JsApi, UIBridge
+
+    bridge = UIBridge()
+    api = JsApi(bridge)
+    index = Path(__file__).resolve().parent / "web" / "index.html"
+    window = webview.create_window(
+        "Anastasia (Anna)", url=str(index), js_api=api,
+        width=1280, height=820, min_size=(900, 650),
+        background_color="#05060f")
+    bridge.window = window
+
+    controller = Controller(ui=bridge)
+    bridge.controller = controller
+    window.events.closing += controller.shutdown
+
+    try:
+        webview.start(gui="edgechromium", debug="--debug" in sys.argv)
+    except Exception as e:
+        controller.shutdown()
+        _webview2_error_box(str(e))
 
 
 if __name__ == "__main__":

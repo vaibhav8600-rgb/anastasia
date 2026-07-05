@@ -42,7 +42,7 @@ class PipelineUI(Protocol):
     def show_error(self, text: str) -> None: ...
     def show_info(self, text: str) -> None: ...
     def set_state(self, state: str, detail: str = "") -> None: ...
-    def ask_confirmation(self, transcript: str, plan, safety) -> None: ...
+    def ask_confirmation(self, action_id: int, transcript: str, plan, safety) -> None: ...
     def hide_confirmation(self) -> None: ...
 
 
@@ -62,7 +62,8 @@ class CommandPipeline:
         self.confirm_timeout_seconds = confirm_timeout_seconds
 
         self.is_processing_command = False
-        self.pending = None            # (plan, safety, transcript)
+        self.pending = None            # (action_id, plan, safety, transcript)
+        self._action_counter = 0
         self._busy_lock = threading.Lock()
         self._pending_lock = threading.Lock()
         self._watchdog: Optional[threading.Timer] = None
@@ -170,9 +171,9 @@ class CommandPipeline:
 
             # 4) confirmation gate — hand over to the user, release busy
             if safety.requires_confirmation:
-                self._set_pending(plan, safety, transcript)
+                action_id = self._set_pending(plan, safety, transcript)
                 self.ui.set_state("waiting_confirmation")
-                self.ui.ask_confirmation(transcript, plan, safety)
+                self.ui.ask_confirmation(action_id, transcript, plan, safety)
                 warn = plan.confirmation_message or \
                     "This one needs your OK — check the screen for me?"
                 self.speech.speak_async(warn)
@@ -240,28 +241,48 @@ class CommandPipeline:
         trace.tts_ms = (time.perf_counter() - t0) * 1000
 
     # ----------------------------------------------------- confirmation
-    def _set_pending(self, plan, safety, transcript: str) -> None:
+    def _set_pending(self, plan, safety, transcript: str) -> int:
         with self._pending_lock:
-            self.pending = (plan, safety, transcript)
+            self._action_counter += 1
+            action_id = self._action_counter
+            self.pending = (action_id, plan, safety, transcript)
             self._confirm_timer = threading.Timer(
                 self.confirm_timeout_seconds,
-                lambda: self.cancel_pending(reason="timeout"))
+                lambda: self.cancel_pending(reason="timeout", action_id=action_id))
             self._confirm_timer.daemon = True
             self._confirm_timer.start()
+        return action_id
 
-    def _take_pending(self):
+    def _take_pending(self, action_id=None):
+        """Pop the pending action; None if there is none or the id is stale
+        (e.g. a click on a card that already timed out)."""
         with self._pending_lock:
+            if self.pending is None:
+                return None
+            if action_id is not None and self.pending[0] != action_id:
+                return None
             pending, self.pending = self.pending, None
             if self._confirm_timer is not None:
                 self._confirm_timer.cancel()
                 self._confirm_timer = None
         return pending
 
-    def approve_pending(self) -> None:
-        pending = self._take_pending()
+    def pending_payload(self):
+        """Serializable view of the pending confirmation (full_state)."""
+        with self._pending_lock:
+            if self.pending is None:
+                return None
+            action_id, plan, safety, transcript = self.pending
+            return {"id": action_id, "transcript": transcript,
+                    "tool": plan.tool_name, "arguments": plan.arguments,
+                    "risk": safety.risk_level,
+                    "message": plan.confirmation_message or safety.reason}
+
+    def approve_pending(self, action_id=None) -> None:
+        pending = self._take_pending(action_id)
         if not pending:
             return
-        plan, safety, transcript = pending
+        _, plan, safety, transcript = pending
         self.ui.hide_confirmation()
 
         def worker():
@@ -294,11 +315,11 @@ class CommandPipeline:
         else:
             worker()
 
-    def cancel_pending(self, reason: str = "user") -> None:
-        pending = self._take_pending()
+    def cancel_pending(self, reason: str = "user", action_id=None) -> None:
+        pending = self._take_pending(action_id)
         if not pending:
             return
-        plan, safety, transcript = pending
+        _, plan, safety, transcript = pending
         self.ui.hide_confirmation()
         self.history.log(transcript, plan, safety, executed=False,
                          result=f"cancelled ({reason})")
