@@ -52,20 +52,31 @@ def test_ollama_payload_contains_required_settings(monkeypatch):
     assert payload["options"]["num_predict"] == 220
     assert payload["options"]["temperature"] == 0.1
     assert payload["options"]["num_ctx"] == 2048
+    assert payload["options"]["num_gpu"] == 0  # iGPU offload corrupts output
     # read timeout honours the 20s config default
     assert captured["timeout"][1] == 20
+
+
+def test_ollama_num_gpu_auto_omits_option(monkeypatch):
+    config = make_config(ollama_num_gpu=-1)
+    captured = capture_post(monkeypatch)
+    OllamaClient(config).chat([{"role": "user", "content": "hi"}])
+    assert "num_gpu" not in captured["payload"]["options"]
 
 
 def test_warmup_request_is_tiny_and_keeps_model_loaded(monkeypatch):
     config = make_config()
     captured = capture_post(monkeypatch, content="Hi!")
     client = OllamaClient(config)
-    ms = client.warm_up()
+    messages = build_intent_messages("hello", config, None)
+    ms = client.warm_up(messages)
     assert ms is not None and client.warmed_up
     payload = captured["payload"]
     assert payload["options"]["num_predict"] == 1
     assert payload["keep_alive"] == "30m"
     assert payload["think"] is False
+    # warm-up primes the prompt cache with the REAL system prompt
+    assert payload["messages"][0]["content"] == messages[0]["content"]
 
 
 def test_think_block_stripped_before_json_parse(monkeypatch):

@@ -72,6 +72,8 @@ class OllamaClient:
                 "num_ctx": self.config.ollama_num_ctx,
             },
         }
+        if self.config.ollama_num_gpu >= 0:
+            payload["options"]["num_gpu"] = self.config.ollama_num_gpu
         if json_format:
             payload["format"] = "json"
         return payload
@@ -109,11 +111,13 @@ class OllamaClient:
             content = strip_thinking(content)
         return content
 
-    def warm_up(self) -> float | None:
-        """Preload the model (tiny 1-token request) so the first real
-        command doesn't pay the load cost. Returns latency in ms, or None."""
+    def warm_up(self, messages: list = None) -> float | None:
+        """Preload the model with a tiny 1-token request. Pass the real
+        intent messages so the system prompt lands in Ollama's prompt cache —
+        that's what makes the FIRST real command fast (CPU prefill of the
+        system prompt costs tens of seconds otherwise). Returns ms or None."""
         payload = self._build_payload(
-            [{"role": "user", "content": "hi"}],
+            messages or [{"role": "user", "content": "hi"}],
             json_format=False, temperature=0.0, num_predict=1)
         started = time.perf_counter()
         try:

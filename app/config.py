@@ -67,6 +67,9 @@ class AppConfig(BaseModel):
     ollama_keep_alive: str = "30m"   # keeps the model loaded between requests
     ollama_num_predict: int = 220    # hard cap on generated tokens
     ollama_num_ctx: int = 2048
+    # 0 = CPU-only (default: partial iGPU offload corrupts some models,
+    # e.g. llama3.2 emitting "@@@@" on Intel UHD graphics). -1 = Ollama auto.
+    ollama_num_gpu: int = 0
 
     # Voice
     voice_enabled: bool = True

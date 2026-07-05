@@ -62,6 +62,7 @@ class Controller:
         if autostart:
             self._register_hotkey()
             threading.Thread(target=self._startup_checks, daemon=True).start()
+            threading.Thread(target=self._warm_imports, daemon=True).start()
             if self.config.wake_word_enabled:
                 self.ui.after(500, self.toggle_wake_word_on)
 
@@ -111,7 +112,9 @@ class Controller:
             if any(self.config.ollama_model in m for m in models):
                 self.show_info(f"Ollama is running (model: {self.config.ollama_model}).")
                 devlog.log("Warming up the model so the first command is fast...")
-                ms = self.agent.llm.warm_up()
+                from app.llm.prompt_builder import build_intent_messages
+                ms = self.agent.llm.warm_up(
+                    build_intent_messages("hello", self.config, self.memory))
                 devlog.log(f"Model warm-up done in {ms:.0f}ms." if ms is not None
                            else "Model warm-up failed (will load on first use).")
             else:
@@ -134,6 +137,18 @@ class Controller:
         from app.voice.tts_piper import piper_available
         if not piper_available(self.config):
             devlog.warn("Piper voice not configured — using the built-in Windows voice.")
+
+    @staticmethod
+    def _warm_imports() -> None:
+        """Preload heavy tool dependencies so the first command doesn't pay
+        multi-second import costs (pyautogui alone takes seconds)."""
+        try:
+            from PIL import ImageGrab  # noqa: F401 — screenshots
+            import pyperclip           # noqa: F401 — clipboard
+            import pyautogui           # noqa: F401 — hotkeys/typing
+            devlog.log("Tool dependencies preloaded.")
+        except Exception as e:
+            devlog.warn(f"Warm import failed: {e}")
 
     def _register_hotkey(self) -> None:
         try:

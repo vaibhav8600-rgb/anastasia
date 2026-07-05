@@ -42,7 +42,9 @@ def open_folder(args: dict, ctx: ToolContext) -> ToolResult:
         return ToolResult(False, f"'{raw}' isn't one of your safe folders. I can open: {safe}.")
     if not folder.exists():
         return ToolResult(False, f"Hmm, {folder} doesn't exist on this machine.")
-    os.startfile(str(folder))  # noqa: S606 — safe-folder whitelist enforced above
+    # Fire-and-forget: os.startfile blocks for seconds when Explorer is cold.
+    import subprocess
+    subprocess.Popen(["explorer", str(folder)])
     return ToolResult(True, f"Opened your {folder.name} folder.")
 
 

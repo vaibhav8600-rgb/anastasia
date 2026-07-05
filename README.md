@@ -166,6 +166,7 @@ tests/               safety / parser / tool tests
 |---|---|
 | "The local AI model is not running" | Start the Ollama app or `ollama serve` |
 | "Model not installed" | `ollama pull llama3.2:3b` |
+| Model replies with garbage (`@@@@`) | keep `"ollama_num_gpu": 0` — partial iGPU offload corrupts some models. Only set `-1` (auto) with a dedicated GPU |
 | No transcription | `pip install faster-whisper`; check mic in Windows privacy settings |
 | No global hotkey | run the terminal as admin (the `keyboard` lib needs it sometimes) |
 | Robotic voice | set up Piper (see above) |

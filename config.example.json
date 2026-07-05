@@ -7,6 +7,7 @@
   "ollama_keep_alive": "30m",
   "ollama_num_predict": 220,
   "ollama_num_ctx": 2048,
+  "ollama_num_gpu": 0,
   "voice_enabled": true,
   "wake_word_enabled": false,
   "push_to_talk_hotkey": "ctrl+alt+space",
