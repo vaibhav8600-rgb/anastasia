@@ -130,6 +130,94 @@ function setChips(chips) {
   }
 }
 
+/* ------------------------------------------- animation quality + canvases */
+let animQuality = "medium";
+let avatarLoaded = false;
+let avatarRAF = 0, haloRAF = 0;
+
+function setAnimQuality(quality) {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    quality = "low";
+  }
+  animQuality = ["low", "medium", "high"].includes(quality) ? quality : "medium";
+  document.body.dataset.anim = animQuality;
+  syncCanvases();
+}
+
+function syncCanvases() {
+  cancelAnimationFrame(avatarRAF); avatarRAF = 0;
+  cancelAnimationFrame(haloRAF); haloRAF = 0;
+  const sphereOn = !document.hidden && !avatarLoaded && animQuality !== "low";
+  $("#avatar-canvas").style.display = sphereOn ? "block" : "none";
+  $("#avatar-fallback").style.display =
+    (avatarLoaded || sphereOn) ? "none" : "block";
+  if (sphereOn) startAvatarSphere();
+  if (!document.hidden && animQuality === "high") startHalo();
+}
+document.addEventListener("visibilitychange", syncCanvases);
+
+/* procedural fallback: particle sphere in the palette (spec sec 4) */
+function startAvatarSphere() {
+  const canvas = $("#avatar-canvas");
+  const size = canvas.parentElement.clientWidth || 280;
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  const N = 240, R = size * 0.36, C = size / 2;
+  const pts = [];
+  for (let i = 0; i < N; i++) {           // fibonacci sphere distribution
+    const y = 1 - (i / (N - 1)) * 2;
+    const r = Math.sqrt(1 - y * y);
+    const th = i * 2.399963;
+    pts.push({ x: Math.cos(th) * r, y, z: Math.sin(th) * r });
+  }
+  const colors = ["34,211,238", "59,130,246", "99,102,241", "168,85,247"];
+  let angle = 0;
+  (function frame() {
+    angle += 0.004;
+    const sin = Math.sin(angle), cos = Math.cos(angle);
+    ctx.clearRect(0, 0, size, size);
+    for (let i = 0; i < N; i++) {
+      const p = pts[i];
+      const x = p.x * cos - p.z * sin;
+      const z = p.x * sin + p.z * cos;
+      const depth = (z + 1) / 2;          // 0 back .. 1 front
+      const px = C + x * R * (0.85 + depth * 0.15);
+      const py = C + p.y * R * 0.92 + Math.sin(angle * 2 + i) * 1.2;
+      ctx.beginPath();
+      ctx.arc(px, py, 0.6 + depth * 1.5, 0, 6.2832);
+      ctx.fillStyle = `rgba(${colors[i % colors.length]},${0.12 + depth * 0.55})`;
+      ctx.fill();
+    }
+    avatarRAF = requestAnimationFrame(frame);
+  })();
+}
+
+/* high tier: tiny scattered particles drifting around the ring */
+function startHalo() {
+  const canvas = $("#halo-canvas");
+  const size = canvas.parentElement.clientWidth * 1.16 || 420;
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  const C = size / 2, R0 = size * 0.40;
+  const dots = Array.from({ length: 36 }, (_, i) => ({
+    a: Math.random() * 6.2832, r: R0 + (Math.random() - 0.3) * size * 0.07,
+    s: 0.0004 + Math.random() * 0.0012, size: 0.5 + Math.random() * 1.3,
+    tw: Math.random() * 6.2832,
+  }));
+  (function frame(t) {
+    ctx.clearRect(0, 0, size, size);
+    for (const d of dots) {
+      d.a += d.s;
+      const alpha = 0.25 + 0.35 * Math.sin(t / 900 + d.tw);
+      ctx.beginPath();
+      ctx.arc(C + Math.cos(d.a) * d.r, C + Math.sin(d.a) * d.r, d.size, 0, 6.2832);
+      ctx.fillStyle = `rgba(34,211,238,${Math.max(alpha, 0.05)})`;
+      ctx.fill();
+    }
+    haloRAF = requestAnimationFrame(frame);
+  })(0);
+}
+
 /* ---------------------------------------------------------------- state */
 function setState(state) {
   currentState = state;
@@ -139,6 +227,8 @@ function setState(state) {
   word.textContent = meta.word;
   word.dataset.tone = meta.tone || "";
   $("#state-sub").textContent = meta.sub;
+  $("#state-sub").classList.toggle("ellipsis",
+    state === "thinking" || state === "transcribing");
   $("#status-word").innerHTML = meta.card === "Ready 💙"
     ? 'Ready <span class="heart">💙</span>' : esc(meta.card);
   $("#status-card").parentElement.dataset.live = LIVE_STATES.has(state);
@@ -229,6 +319,8 @@ const handlers = {
 
   mic: () => {},  // covered by state_change; kept for protocol completeness
 
+  prefs: (p) => setAnimQuality(p.animation_quality),
+
   clear_conversation: () => { messagesEl().innerHTML = ""; },
 
   history: (p) => openModal("Command history", historyHtml(p.rows)),
@@ -249,6 +341,7 @@ const handlers = {
   full_state: (p) => {
     setState(p.state || "ready");
     setChips(p.chips || {});
+    if (p.prefs) setAnimQuality(p.prefs.animation_quality);
     if (p.toggles) {
       $("#toggle-wake").checked = !!p.toggles.wake_word;
       $("#toggle-voice").checked = !!p.toggles.voice;
@@ -288,12 +381,15 @@ function sendInput() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  // avatar drop-in slot: use assets/avatar.png when present, else fallback
+  // avatar drop-in slot: use assets/avatar.png when present, else the
+  // procedural particle sphere (swapping the image in needs zero code changes)
   const avatar = $("#avatar");
   avatar.addEventListener("load", () => {
+    avatarLoaded = true;
     avatar.style.display = "block";
-    $("#avatar-fallback").style.display = "none";
+    syncCanvases();
   });
+  setAnimQuality("medium");   // default until full_state arrives
 
   $("#send-btn").addEventListener("click", sendInput);
   $("#cmd-input").addEventListener("keydown", (e) => {

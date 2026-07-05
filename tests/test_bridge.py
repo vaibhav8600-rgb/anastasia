@@ -76,6 +76,16 @@ def test_full_state_rehydrates_conversation_and_toggles():
     assert full["toggles"] == {"wake_word": False, "voice": True}
     assert full["state"] in ("ready", "thinking")
     assert full["hotkey"] == "ctrl+alt+space"
+    assert full["prefs"] == {"animation_quality": "medium"}
+
+
+def test_save_settings_dispatches_prefs():
+    bridge, window, controller = make_web_controller()
+    JsApi(bridge).ready()
+    controller.save_settings({"animation_quality": "high"})
+    assert controller.config.animation_quality == "high"
+    prefs = window.of_type("prefs")[-1]["payload"]
+    assert prefs == {"animation_quality": "high"}
 
 
 # ---- js_api routing -----------------------------------------------------------

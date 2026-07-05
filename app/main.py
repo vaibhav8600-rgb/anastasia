@@ -406,6 +406,7 @@ class Controller:
             "pending": self.pipeline.pending_payload(),
             "hotkey": self.config.push_to_talk_hotkey,
             "assistant": self.config.assistant_nickname,
+            "prefs": {"animation_quality": self.config.animation_quality},
         })
 
     def open_path(self, path: str) -> None:
@@ -464,6 +465,9 @@ class Controller:
             self.config.save()
             devlog.log(f"Settings changed: {', '.join(changed)}")
             self.show_info("Settings saved.")
+            if hasattr(self.ui, "dispatch"):
+                self.ui.dispatch("prefs", {
+                    "animation_quality": self.config.animation_quality})
             threading.Thread(target=self.run_health_checks, daemon=True).start()
 
     def show_history(self) -> None:
