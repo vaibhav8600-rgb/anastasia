@@ -429,19 +429,40 @@ class Controller:
         devlog.warn(f"open_path refused (outside allowed roots): {path}")
 
     def open_settings(self) -> None:
-        """js_api: send current (basic) settings to the frontend modal.
-        Voice/STT/TTS sections arrive in Phase 5."""
+        """js_api: send current settings to the frontend modal."""
         if hasattr(self.ui, "dispatch"):
+            c = self.config
             self.ui.dispatch("settings", {
                 "user_name": str(self.memory.get("user_name", "") or ""),
-                "ollama_url": self.config.ollama_url,
-                "ollama_model": self.config.ollama_model,
-                "ollama_timeout": self.config.ollama_timeout,
-                "animation_quality": self.config.animation_quality,
+                "ollama_url": c.ollama_url,
+                "ollama_model": c.ollama_model,
+                "ollama_timeout": c.ollama_timeout,
+                "animation_quality": c.animation_quality,
+                "tts_backend": c.tts_backend,
+                "piper_exe": c.piper_exe,
+                "piper_voice": c.piper_voice,
+                "tts_rate": c.tts_rate,
+                "tts_volume": c.tts_volume,
+                "faster_whisper_model": c.faster_whisper_model,
+                "stt_language": c.stt_language,
+                "silence_seconds": c.silence_seconds,
+                "max_record_seconds": c.max_record_seconds,
             })
 
-    _SETTINGS_FIELDS = {"ollama_url": str, "ollama_model": str,
-                        "ollama_timeout": int, "animation_quality": str}
+    _SETTINGS_FIELDS = {
+        "ollama_url": str, "ollama_model": str, "ollama_timeout": int,
+        "animation_quality": str,
+        "tts_backend": str, "piper_exe": str, "piper_voice": str,
+        "tts_rate": float, "tts_volume": int,
+        "faster_whisper_model": str, "stt_language": str,
+        "silence_seconds": float, "max_record_seconds": int,
+    }
+    _SETTINGS_CHOICES = {
+        "animation_quality": {"low", "medium", "high"},
+        "tts_backend": {"auto", "piper", "windows", "off"},
+        "faster_whisper_model": {"tiny", "base", "small"},
+        "stt_language": {"auto", "en", "hi", "mr"},
+    }
 
     def save_settings(self, settings: dict) -> None:
         """js_api: apply a whitelisted subset of settings, then recheck."""
@@ -451,6 +472,9 @@ class Controller:
                 try:
                     value = cast(settings[key])
                 except (TypeError, ValueError):
+                    continue
+                choices = self._SETTINGS_CHOICES.get(key)
+                if choices and value not in choices:
                     continue
                 if getattr(self.config, key) != value:
                     setattr(self.config, key, value)
@@ -468,7 +492,65 @@ class Controller:
             if hasattr(self.ui, "dispatch"):
                 self.ui.dispatch("prefs", {
                     "animation_quality": self.config.animation_quality})
+            from app.voice.tts_piper import piper_available
+            if self.config.tts_backend == "piper" and not piper_available(self.config):
+                self.show_info("Piper is selected but not fully configured — "
+                               "I'll stay silent until the exe and voice paths are set.")
             threading.Thread(target=self.run_health_checks, daemon=True).start()
+
+    # ------------------------------------------------------- settings tests
+    def _test_result(self, kind: str, ok: bool, message: str) -> None:
+        devlog.log(f"Test {kind}: ok={ok} — {message}")
+        if hasattr(self.ui, "dispatch"):
+            self.ui.dispatch("test_result", {"kind": kind, "ok": ok,
+                                             "message": message})
+
+    def test_voice(self) -> None:
+        """js_api: speak a sample line with the current voice settings."""
+        from app.voice.tts_piper import piper_available
+        backend = ("Piper" if (self.config.tts_backend in ("auto", "piper")
+                               and piper_available(self.config))
+                   else "the built-in Windows voice")
+        self.speech.speak_async("Hi, it's Anna — this is how I sound right now. "
+                                "Do you like this voice?")
+        self._test_result("voice", True, f"Speaking a sample with {backend}…")
+
+    def test_model(self) -> None:
+        """js_api: one tiny request to verify the model answers, with timing."""
+        def worker():
+            if not self.agent.llm.is_available():
+                self._test_result("model", False, "Ollama is not reachable.")
+                return
+            from app.llm.prompt_builder import build_intent_messages
+            ms = self.agent.llm.warm_up(
+                build_intent_messages("hello", self.config, self.memory))
+            if ms is None:
+                self._test_result("model", False,
+                                  f"'{self.config.ollama_model}' didn't answer — "
+                                  "is it pulled?")
+            else:
+                self._test_result("model", True, f"Model answered in {ms:.0f}ms.")
+        threading.Thread(target=worker, daemon=True).start()
+
+    def test_microphone(self) -> None:
+        """js_api: record ~3s and transcribe it as a mic/STT check."""
+        def worker():
+            if self.recorder.recording or self.pipeline.is_processing_command:
+                self._test_result("mic", False, "Busy — try again in a moment.")
+                return
+            try:
+                self.recorder.start()
+                self._test_result("mic", True, "Recording 3 seconds — say something…")
+                threading.Event().wait(3.0)
+                text = self._transcribe_recording()
+            except Exception as e:
+                devlog.exception(e, context="mic test")
+                self._test_result("mic", False, "Microphone/STT failed — see Developer Tools.")
+                return
+            self._test_result("mic", bool(text),
+                              f"I heard: “{text}”" if text
+                              else "I didn't hear anything.")
+        threading.Thread(target=worker, daemon=True).start()
 
     def show_history(self) -> None:
         self.ui.show_history_window(self.history.recent(50))

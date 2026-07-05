@@ -1,8 +1,9 @@
 # HANDOFF — Anastasia (Anna) overhaul
 
 > Continuation file for any agent picking up this project mid-flight.
-> Updated at every phase gate. Last update: **2026-07-05, end of Phase 4
-> (awaiting user approval to start Phase 5)**.
+> Updated at every phase gate. Last update: **2026-07-05, end of Phase 5
+> (awaiting user approval to start Phase 6 — the final phase)**.
+> See also: ARCHITECTURE.md (system design) and SKILL.md (command reference).
 
 ## What this project is
 
@@ -31,7 +32,7 @@ central holographic avatar orb).
 | 2 user/dev message separation | ✅ approved | `9342e35` |
 | 3 pywebview UI shell | ✅ approved | `724e9b3` |
 | 4 visual polish (glass/glow/orb/animations) | ✅ done, awaiting approval | see git log |
-| 5 voice settings (Piper UI, test voice, STT settings) | ⬜ pending | — |
+| 5 voice settings (Piper UI, test voice, STT settings) | ✅ done, awaiting approval | see git log |
 | 6 final QA + README + final report | ⬜ pending | — |
 
 Run tests: `./.venv/Scripts/python.exe -m pytest tests/ -q` (118 passing at
@@ -134,16 +135,19 @@ scratchpad (p4_ready/p4_listening/p4_confirm.png).
 transitioned properties. Verify transitioned styles in a visible window;
 static computed properties (animationDuration etc.) are fine hidden.
 
-## Phase 5 scope (next)
+## Phase 5 — DONE (2026-07-05)
 
-Settings modal sections per spec sec 20: Voice output (TTS backend
-piper/windows/off, piper_exe path, piper_voice path, speed/volume, **Test
-voice** button), Voice input (STT model size tiny/base/small, language,
-silence timeout, max recording seconds, **Test microphone**), Local model
-(Test model button). Extend `save_settings` whitelist + `open_settings`
-payload. Piper fallback messaging already in chips/devlog. Voice speed/volume
-need plumbing into SpeechOutput (SAPI `$s.Rate`, Piper length_scale) — new
-config keys `tts_rate`, `tts_volume` with migration defaults.
+Delivered: sectioned settings modal (General / Local model / Voice input /
+Voice output) with 14 fields; new config keys `tts_rate` (0.5–2.0),
+`tts_volume` (0–100, SAPI only — winsound can't attenuate Piper playback;
+noted limitation), `stt_language` (auto/en/hi/mr, passed to faster-whisper);
+SAPI `$s.Rate`/`$s.Volume` mapping via `sapi_rate()` and Piper
+`--length_scale` via `piper_length_scale()` (both unit-tested);
+save_settings whitelist extended with choice validation (bad enum values
+rejected); Test model / Test microphone / Test voice buttons — each saves
+the form first, then runs async and reports back via `test_result` dispatch
+into a status line; friendly warning when tts_backend=piper but paths
+missing. 126 tests. Also added ARCHITECTURE.md + SKILL.md.
 
 ## Phase 6 scope
 

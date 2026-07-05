@@ -182,6 +182,15 @@ class JsApi:
         if self._bridge._on_recheck:
             self._bridge._on_recheck()
 
+    def test_voice(self) -> None:
+        self._controller.test_voice()
+
+    def test_microphone(self) -> None:
+        self._controller.test_microphone()
+
+    def test_model(self) -> None:
+        self._controller.test_model()
+
     # -- data ---------------------------------------------------------------
     def get_history(self, page=0) -> list:
         return self._controller.history.recent(50)

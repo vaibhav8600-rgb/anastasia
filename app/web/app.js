@@ -266,10 +266,21 @@ function historyHtml(rows) {
   return `<table><tr><th>When</th><th>Command</th><th>Tool</th><th></th></tr>${body}</table>`;
 }
 
+function selectHtml(id, value, options) {
+  return `<select id="set-${id}">${options.map(o =>
+    `<option value="${o}" ${o === String(value) ? "selected" : ""}>${o}</option>`)
+    .join("")}</select>`;
+}
+
 function settingsHtml(s) {
   return `
+    <h4 class="settings-section">General</h4>
     <div class="form-row"><label>Your name (Anna greets you with it)</label>
       <input id="set-user_name" value="${esc(s.user_name || "")}"></div>
+    <div class="form-row"><label>Animation quality</label>
+      ${selectHtml("animation_quality", s.animation_quality, ["low", "medium", "high"])}</div>
+
+    <h4 class="settings-section">Local model</h4>
     <div class="form-row"><label>Ollama URL</label>
       <input id="set-ollama_url" value="${esc(s.ollama_url || "")}"></div>
     <div class="form-row"><label>Model name</label>
@@ -277,13 +288,62 @@ function settingsHtml(s) {
     <div class="form-row"><label>Model timeout (seconds)</label>
       <input id="set-ollama_timeout" type="number" min="5" max="120"
              value="${esc(s.ollama_timeout || 20)}"></div>
-    <div class="form-row"><label>Animation quality</label>
-      <select id="set-animation_quality">
-        ${["low", "medium", "high"].map(q =>
-          `<option value="${q}" ${q === s.animation_quality ? "selected" : ""}>${q}</option>`).join("")}
-      </select></div>
-    <p class="dim" style="margin:4px 0 12px">Voice input/output settings arrive in a later update.</p>
+    <button class="ghost-btn" id="test-model">Test model</button>
+
+    <h4 class="settings-section">Voice input (microphone &amp; speech-to-text)</h4>
+    <div class="form-row"><label>Whisper model (bigger = slower, more accurate)</label>
+      ${selectHtml("faster_whisper_model", s.faster_whisper_model, ["tiny", "base", "small"])}</div>
+    <div class="form-row"><label>Language</label>
+      ${selectHtml("stt_language", s.stt_language, ["auto", "en", "hi", "mr"])}</div>
+    <div class="form-row"><label>Silence timeout (seconds of quiet that ends a recording)</label>
+      <input id="set-silence_seconds" type="number" step="0.1" min="0.5" max="5"
+             value="${esc(s.silence_seconds)}"></div>
+    <div class="form-row"><label>Max recording length (seconds)</label>
+      <input id="set-max_record_seconds" type="number" min="3" max="60"
+             value="${esc(s.max_record_seconds)}"></div>
+    <button class="ghost-btn" id="test-mic">Test microphone</button>
+
+    <h4 class="settings-section">Voice output (Anna's voice)</h4>
+    <div class="form-row"><label>Voice engine</label>
+      ${selectHtml("tts_backend", s.tts_backend, ["auto", "piper", "windows", "off"])}</div>
+    <div class="form-row"><label>Piper executable path (piper.exe)</label>
+      <input id="set-piper_exe" value="${esc(s.piper_exe || "")}"
+             placeholder="C:\\tools\\piper\\piper.exe"></div>
+    <div class="form-row"><label>Piper voice model path (.onnx)</label>
+      <input id="set-piper_voice" value="${esc(s.piper_voice || "")}"
+             placeholder="C:\\tools\\piper\\en_US-amy-medium.onnx"></div>
+    <div class="form-row"><label>Voice speed (0.5 slow — 2.0 fast)</label>
+      <input id="set-tts_rate" type="number" step="0.1" min="0.5" max="2"
+             value="${esc(s.tts_rate)}"></div>
+    <div class="form-row"><label>Volume (0–100, Windows voice only)</label>
+      <input id="set-tts_volume" type="number" min="0" max="100"
+             value="${esc(s.tts_volume)}"></div>
+    <button class="ghost-btn" id="test-voice">Test voice</button>
+    <p class="dim" style="margin:8px 0 0">"auto" prefers Piper when configured and
+      falls back to the built-in Windows voice.</p>
+
+    <div id="settings-status" class="dim" style="margin:12px 0"></div>
     <button class="primary-btn" id="settings-save">Save</button>`;
+}
+
+function collectSettings() {
+  const val = (id) => $("#set-" + id)?.value;
+  return {
+    user_name: val("user_name"),
+    animation_quality: val("animation_quality"),
+    ollama_url: val("ollama_url"),
+    ollama_model: val("ollama_model"),
+    ollama_timeout: parseInt(val("ollama_timeout"), 10) || 20,
+    faster_whisper_model: val("faster_whisper_model"),
+    stt_language: val("stt_language"),
+    silence_seconds: parseFloat(val("silence_seconds")) || 1.2,
+    max_record_seconds: parseInt(val("max_record_seconds"), 10) || 8,
+    tts_backend: val("tts_backend"),
+    piper_exe: val("piper_exe"),
+    piper_voice: val("piper_voice"),
+    tts_rate: parseFloat(val("tts_rate")) || 1.0,
+    tts_volume: parseInt(val("tts_volume"), 10),
+  };
 }
 
 /* ------------------------------------------------------- event handlers */
@@ -327,15 +387,27 @@ const handlers = {
   settings: (p) => {
     openModal("Settings", settingsHtml(p));
     $("#settings-save").addEventListener("click", () => {
-      call("save_settings", {
-        user_name: $("#set-user_name").value,
-        ollama_url: $("#set-ollama_url").value,
-        ollama_model: $("#set-ollama_model").value,
-        ollama_timeout: parseInt($("#set-ollama_timeout").value, 10) || 20,
-        animation_quality: $("#set-animation_quality").value,
-      });
+      call("save_settings", collectSettings());
       closeModal();
     });
+    // Test buttons save the current form first so tests use what you typed.
+    $("#test-model").addEventListener("click", () => {
+      call("save_settings", collectSettings()).then(() => call("test_model"));
+    });
+    $("#test-mic").addEventListener("click", () => {
+      call("save_settings", collectSettings()).then(() => call("test_microphone"));
+    });
+    $("#test-voice").addEventListener("click", () => {
+      call("save_settings", collectSettings()).then(() => call("test_voice"));
+    });
+  },
+
+  test_result: (p) => {
+    const status = $("#settings-status");
+    if (status) {
+      status.textContent = `${p.ok ? "✅" : "⚠"} ${p.message}`;
+      status.style.color = p.ok ? "var(--success)" : "var(--warn)";
+    }
   },
 
   full_state: (p) => {

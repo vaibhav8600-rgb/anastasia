@@ -34,7 +34,10 @@ def _faster_whisper(wav_path: str, config) -> str:
                                  device="cpu", compute_type="int8")
         _fw_model_name = config.faster_whisper_model
 
-    segments, _info = _fw_model.transcribe(wav_path, vad_filter=True, beam_size=1)
+    language = getattr(config, "stt_language", "auto")
+    segments, _info = _fw_model.transcribe(
+        wav_path, vad_filter=True, beam_size=1,
+        language=None if language in ("", "auto") else language)
     return " ".join(seg.text.strip() for seg in segments).strip()
 
 

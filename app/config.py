@@ -91,6 +91,11 @@ class AppConfig(BaseModel):
     tts_backend: str = "auto"            # "auto" | "piper" | "windows" | "off"
     piper_exe: str = ""                  # path to piper.exe
     piper_voice: str = ""                # path to .onnx voice model
+    tts_rate: float = 1.0                # speed multiplier 0.5..2.0
+    tts_volume: int = 100                # 0..100 (SAPI only; Piper ignores)
+
+    # STT language: "auto" or a code like en / hi / mr
+    stt_language: str = "auto"
 
     # Safety / behavior
     confirmation_mode: str = "strict"    # "strict" | "normal"

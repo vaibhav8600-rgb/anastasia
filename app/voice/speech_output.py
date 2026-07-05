@@ -20,6 +20,16 @@ from app.voice import _clean_for_speech, audio_gate
 _STOP = object()
 
 
+def sapi_rate(rate: float) -> int:
+    """Map a 0.5..2.0 speed multiplier onto SAPI's -10..10 scale."""
+    return max(-10, min(10, round((float(rate) - 1.0) * 10)))
+
+
+def piper_length_scale(rate: float) -> float:
+    """Piper slows down as length_scale grows; invert the multiplier."""
+    return round(1.0 / max(0.25, min(4.0, float(rate) or 1.0)), 2)
+
+
 class SpeechOutput:
     def __init__(self, config, on_speaking_changed=None):
         self.config = config
@@ -120,10 +130,13 @@ class SpeechOutput:
         import tempfile
         wav_path = Path(tempfile.gettempdir()) / "anna_tts.wav"
         creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        args = [str(self.config.piper_exe), "--model", str(self.config.piper_voice),
+                "--output_file", str(wav_path)]
+        rate = getattr(self.config, "tts_rate", 1.0)
+        if rate and rate != 1.0:
+            args += ["--length_scale", str(piper_length_scale(rate))]
         proc = subprocess.run(
-            [str(self.config.piper_exe), "--model", str(self.config.piper_voice),
-             "--output_file", str(wav_path)],
-            input=text.encode("utf-8"), capture_output=True,
+            args, input=text.encode("utf-8"), capture_output=True,
             timeout=60, creationflags=creation)
         if proc.returncode != 0 or not wav_path.exists():
             raise RuntimeError(f"Piper failed: {(proc.stderr or b'')[:200]!r}")
@@ -147,13 +160,15 @@ class SpeechOutput:
 
     def _speak_windows(self, text: str) -> None:
         escaped = text.replace("'", "''")
+        rate = sapi_rate(getattr(self.config, "tts_rate", 1.0))
+        volume = max(0, min(100, int(getattr(self.config, "tts_volume", 100))))
         script = (
             "Add-Type -AssemblyName System.Speech; "
             "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
             "$v = $s.GetInstalledVoices() | Where-Object { $_.VoiceInfo.Gender -eq 'Female' } "
             "| Select-Object -First 1; "
             "if ($v) { $s.SelectVoice($v.VoiceInfo.Name) }; "
-            "$s.Rate = 0; "
+            f"$s.Rate = {rate}; $s.Volume = {volume}; "
             f"$s.Speak('{escaped}')"
         )
         creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
