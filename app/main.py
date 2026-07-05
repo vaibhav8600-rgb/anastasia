@@ -596,6 +596,10 @@ def _webview2_error_box(detail: str) -> None:
 
 
 def main() -> None:
+    if "--doctor" in sys.argv:
+        from app.doctor import run_doctor
+        sys.exit(run_doctor())
+
     import webview
 
     from app.web.bridge import JsApi, UIBridge

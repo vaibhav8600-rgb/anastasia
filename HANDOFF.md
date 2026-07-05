@@ -1,9 +1,9 @@
 # HANDOFF — Anastasia (Anna) overhaul
 
 > Continuation file for any agent picking up this project mid-flight.
-> Updated at every phase gate. Last update: **2026-07-05, end of Phase 5
-> (awaiting user approval to start Phase 6 — the final phase)**.
-> See also: ARCHITECTURE.md (system design) and SKILL.md (command reference).
+> Last update: **2026-07-05, end of Phase 6 — ALL SIX PHASES COMPLETE.**
+> See: ARCHITECTURE.md (design) · SKILL.md (commands) · FINAL_REPORT.md
+> (before/after numbers, deviations, QA matrix, remaining human-only checks).
 
 ## What this project is
 
@@ -33,7 +33,15 @@ central holographic avatar orb).
 | 3 pywebview UI shell | ✅ approved | `724e9b3` |
 | 4 visual polish (glass/glow/orb/animations) | ✅ done, awaiting approval | see git log |
 | 5 voice settings (Piper UI, test voice, STT settings) | ✅ done, awaiting approval | see git log |
-| 6 final QA + README + final report | ⬜ pending | — |
+| 6 final QA + README + final report | ✅ done | see git log |
+
+Phase 6 delivered: `--doctor` health check (app/doctor.py, green on target
+machine), README rewritten (pywebview/WebView2, llama3.2:3b, troubleshooting
+incl. warm-up / half-duplex / @@@@-num_gpu rows), hidden-window E2E QA
+(304ms rule cmd, 13.4s correct LLM answer, confirm/cancel by id, no stuck
+busy), FINAL_REPORT.md. Open follow-ups (user-driven, not spec debt): real-mic
+/ Piper / wake-word manual checks, avatar.png drop-in, user_name setting,
+optional Piper WAV volume, voice-approval buttons on web confirm cards.
 
 Run tests: `./.venv/Scripts/python.exe -m pytest tests/ -q` (118 passing at
 end of Phase 3). Run app: `./.venv/Scripts/python.exe app/main.py`.
