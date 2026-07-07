@@ -24,6 +24,9 @@
   "ollama_num_gpu": 0,
   "voice_enabled": true,
   "wake_word_enabled": false,
+  "wake_word_backend": "whisper",
+  "wake_word_model": "base",
+  "wake_word_phrases": ["hey anna", "anna", "anastasia", "hey anastasia"],
   "push_to_talk_hotkey": "ctrl+alt+space",
   "stt": {
     "garble": {

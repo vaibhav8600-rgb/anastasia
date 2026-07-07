@@ -48,9 +48,12 @@ arbitrary code execution.
   while she speaks (plus a 0.4 s echo tail).
 - **Barge-in:** press push-to-talk while she's talking to cut her off and
   speak immediately.
-- **Wake word** (optional, off by default): needs `pip install openwakeword`;
-  uses the pre-trained "Hey Jarvis" model until a custom "Hey Anna" model is
-  trained. Push-to-talk stays the primary path.
+- **Wake word** (optional, off by default): flip the toggle and say
+  **"Hey Anna"** or **"Anastasia"** — a local-Whisper name spotter (no training,
+  no extra install). Say the full "Hey Anna" (a bare "Anna" is too short to
+  recognize reliably); expect a ~1–3 s delay since it's local STT. The classic
+  "Hey Jarvis" model is still available via `wake_word_backend: "openwakeword"`.
+  Push-to-talk stays the primary path.
 - Whisper confidence—not wording—decides whether audio needs a retry. Strong
   fuzzy corrections run directly; uncertain ones show a neutral Yes/No card.
   Typing always wins over an in-flight recording.

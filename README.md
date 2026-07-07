@@ -140,8 +140,12 @@ python app\main.py --doctor   # health check
 - **Type:** the input box at the bottom right. Enter sends.
 - **Approvals:** terminal/window commands show an amber card — Run it or
   Cancel (auto-cancels in 30 s).
-- **Wake word** (optional): `pip install openwakeword`, then flip the toggle.
-  Uses the pre-trained "Hey Jarvis" model.
+- **Wake word** (optional): flip the toggle and just say **"Hey Anna"** (or
+  "Anastasia"). This uses the local Whisper STT to listen for her name — no
+  training, no extra install. Say the full "Hey Anna"; a bare "Anna" is too
+  short for reliable recognition, and there's a ~1–3 s recognition delay
+  since it's local speech-to-text. Prefer the classic "Hey Jarvis" wake model?
+  `pip install openwakeword` and set `wake_word_backend: "openwakeword"`.
 - Full command list: [SKILL.md](SKILL.md).
 
 ## Troubleshooting

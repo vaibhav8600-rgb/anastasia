@@ -775,27 +775,31 @@ class Controller:
             self.show_info("Wake word off.")
 
     def toggle_wake_word_on(self) -> None:
-        # openwakeword is only imported here — never when the feature is off.
-        from app.voice.wake_word import WakeWordListener, WakeWordUnavailable
+        from app.voice.wake_word import make_wake_word, WakeWordUnavailable
         try:
-            self.wake_listener = WakeWordListener(self.config, self._on_wake)
+            self.wake_listener = make_wake_word(self.config, self._on_wake)
             self.wake_listener.start()
             if not self.config.wake_word_enabled:
                 self.config.wake_word_enabled = True
                 self.config.save()
             self._ui(self.ui.set_wake_switch, True)
-            self.show_info('Wake word on — say "Hey Jarvis" (pre-trained model) to wake me.')
+            if getattr(self.config, "wake_word_backend", "whisper") == "openwakeword":
+                self.show_info('Wake word on — say "Hey Jarvis" to wake me.')
+            else:
+                names = " or ".join(f'"{p.title()}"' for p in
+                                    (self.config.wake_word_phrases or ["Anna"])[:2])
+                self.show_info(f"Wake word on — just say {names} to wake me.")
         except WakeWordUnavailable as e:
             self.wake_listener = None
             self._ui(self.ui.set_wake_switch, False)
             if self.config.wake_word_enabled:
                 self.config.wake_word_enabled = False
                 self.config.save()
-            devlog.warn(f"{e} — install with: pip install openwakeword")
+            devlog.warn(str(e))
             if not self._wake_warned:
                 self._wake_warned = True
-                self.show_info("Wake word needs an optional package — I turned the "
-                               "toggle off for now. Details are in Developer Tools.")
+                self.show_info("Wake word couldn't start — details are in "
+                               "Developer Tools. I turned the toggle off for now.")
 
     def _on_wake(self) -> None:
         if not self.pipeline.is_processing_command and not self.recorder.recording:
@@ -1018,6 +1022,7 @@ class Controller:
         "allow_clipboard_to_cloud": bool,
         "hands_free_followup": bool,
         "stt_mode": str, "deepgram_model": str,
+        "wake_word_backend": str, "wake_word_model": str,
     }
     _SETTINGS_CHOICES = {
         "animation_quality": {"low", "medium", "high"},
@@ -1029,6 +1034,8 @@ class Controller:
         "stt_language": {"auto", "en", "hi", "mr"},
         "brain_mode": {"hybrid", "local_only"},
         "stt_mode": {"streaming", "local"},
+        "wake_word_backend": {"whisper", "openwakeword"},
+        "wake_word_model": {"tiny", "base", "small"},
     }
 
     def save_settings(self, settings: dict) -> None:

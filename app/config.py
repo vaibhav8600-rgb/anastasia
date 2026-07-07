@@ -96,6 +96,14 @@ class AppConfig(BaseModel):
     # Voice
     voice_enabled: bool = True
     wake_word_enabled: bool = False
+    # "whisper" = listen for Anna's actual name via local STT (no training,
+    # no extra deps). "openwakeword" = the pre-trained "Hey Jarvis" model.
+    wake_word_backend: str = "whisper"
+    # "base" recognizes "Hey Anna"/"Anastasia" reliably; "tiny" is faster but
+    # mishears short names; "small" is most accurate but slowest.
+    wake_word_model: str = "base"
+    wake_word_phrases: List[str] = Field(
+        default_factory=lambda: ["hey anna", "anna", "anastasia", "hey anastasia"])
     push_to_talk_hotkey: str = "ctrl+alt+space"
 
     # STT
