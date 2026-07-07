@@ -72,6 +72,7 @@ class DeepgramStream:
         self.closed = False
         self._started = time.perf_counter()
         self._final_sent = False
+        self._errored = False   # report at most one error per stream
 
     # -- Deepgram message handling (tests drive these directly) ----------
     def _handle_message(self, raw: str) -> None:
@@ -102,13 +103,20 @@ class DeepgramStream:
             self.on_partial(text, False)
 
     def _handle_error(self, detail: str) -> None:
-        if not self.closed:
-            self.on_error(STTResult(provider="deepgram", error="network",
-                                    error_detail=str(detail)[:150]))
+        # A close AFTER we already have the final is a clean end, not a failure.
+        # Report at most one error per stream so a closed socket can't spam the
+        # dev log or over-trip the STT circuit breaker.
+        if self.closed or self._errored or self._final_sent:
+            self.closed = True
+            return
+        self._errored = True
+        self.closed = True
+        self.on_error(STTResult(provider="deepgram", error="network",
+                                error_detail=str(detail)[:150]))
 
     # -- audio in --------------------------------------------------------
     def send_audio(self, pcm_bytes: bytes) -> None:
-        if self.closed or self.ws is None:
+        if self.closed or self._errored or self.ws is None:
             return
         try:
             self.ws.send(pcm_bytes, opcode=0x2)  # binary frame

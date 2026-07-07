@@ -34,6 +34,29 @@ APPROVE_WORDS = {"approve", "approved", "yes", "yeah", "yep", "haan", "confirm",
 CANCEL_WORDS = {"cancel", "no", "nope", "stop", "abort", "never mind", "nevermind"}
 
 
+def _confidence_is_low(confidence, thresholds=None) -> bool:
+    """Type-safe low-confidence check for the hands-free garble guard.
+    Deepgram gives a float (0..1); local Whisper gives a SpeechConfidence
+    object — never compare the object directly to a float (that crashed the
+    _finish_recording thread)."""
+    if confidence is None:
+        return False
+    if isinstance(confidence, (int, float)):
+        return confidence < 0.4
+    # SpeechConfidence: mirror the pipeline's signals (very unlikely speech,
+    # or a runaway repetitive/low-logprob transcript).
+    if thresholds is None:
+        from app.config import GarbleConfig
+        thresholds = GarbleConfig()
+    no_speech = getattr(confidence, "no_speech_prob", None)
+    logprob = getattr(confidence, "avg_logprob", None)
+    if no_speech is not None and no_speech > thresholds.no_speech_prob:
+        return True
+    if logprob is not None and logprob < thresholds.avg_logprob:
+        return True
+    return False
+
+
 class Controller:
     """Owns config, agent, recorder, speech and the pipeline.
     Also implements the pipeline's UI interface by marshalling onto the
@@ -235,7 +258,7 @@ class Controller:
         if self._hands_free_active:
             self.stop_hands_free("idle timeout", signoff=True)
 
-    def _hands_free_handle_final(self, text: str, confidence: float = 1.0) -> bool:
+    def _hands_free_handle_final(self, text: str, confidence=1.0) -> bool:
         """Loop-specific handling of a transcript before routing. Returns True
         if the pipeline should NOT process it (handled here: stop phrase,
         empty/garble). Only meaningful while the loop is active."""
@@ -247,7 +270,8 @@ class Controller:
             self.show_user(cleaned)
             self.stop_hands_free("you asked me to stop", signoff=True)
             return True
-        is_garble = (not cleaned) or (confidence < 0.4)
+        is_garble = (not cleaned) or _confidence_is_low(
+            confidence, getattr(self.config.stt, "garble", None))
         if is_garble:
             # Don't count as a turn, don't nag every silence — just keep
             # listening. After 3 in a row, check in once.

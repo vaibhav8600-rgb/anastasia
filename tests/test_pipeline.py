@@ -148,11 +148,11 @@ def _terminal_agent():
 
 def test_confirmation_timeout_auto_cancels_and_resets_state():
     pipeline, ui, _, agent = make_pipeline(agent=_terminal_agent(),
-                                           confirm_timeout_seconds=0.05)
+                                           confirm_timeout_seconds=0.1)
     pipeline.submit("run git status", source="typed")
     assert pipeline.pending is not None
     assert ui.states[-1] == "waiting_confirmation"
-    deadline = time.time() + 2.0
+    deadline = time.time() + 5.0   # generous margin under full-suite CPU load
     while pipeline.pending is not None and time.time() < deadline:
         time.sleep(0.01)
     assert pipeline.pending is None

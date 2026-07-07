@@ -12,13 +12,18 @@ from app.tools import ToolContext
 from tests.fakes import make_config
 
 
-def _fake_grab(monkeypatch, size=(1920, 1080)):
-    class FakeGrab:
-        @staticmethod
-        def grab():
-            return Image.new("RGB", size, (30, 40, 90))
+def _fake_grab(monkeypatch, size=(1920, 1080), monitors=1):
+    def grab(*a, **k):
+        # honor a bbox (per-monitor capture) so the size reflects the crop
+        bbox = k.get("bbox")
+        if bbox:
+            return Image.new("RGB", (bbox[2] - bbox[0], bbox[3] - bbox[1]), (30, 40, 90))
+        return Image.new("RGB", size, (30, 40, 90))
     import PIL.ImageGrab
-    monkeypatch.setattr(PIL.ImageGrab, "grab", FakeGrab.grab)
+    monkeypatch.setattr(PIL.ImageGrab, "grab", grab)
+    # deterministic monitor layout so tests don't depend on real hardware
+    rects = [(i * size[0], 0, (i + 1) * size[0], size[1]) for i in range(monitors)]
+    monkeypatch.setattr(shot, "_monitor_rects", lambda: rects)
 
 
 def take(monkeypatch, tmp_path, size=(1920, 1080)):

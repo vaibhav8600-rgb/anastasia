@@ -43,6 +43,28 @@ def _make_thumbnail(image_path: Path) -> str | None:
     return result["url"]   # None if the thread is still running past the cap
 
 
+def _monitor_rects() -> list:
+    """Left-to-right ordered (left, top, right, bottom) rects for each monitor.
+    Empty on failure -> caller falls back to the whole virtual desktop."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        rects = []
+        proc = ctypes.WINFUNCTYPE(
+            ctypes.c_int, wintypes.HMONITOR, wintypes.HDC,
+            ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
+
+        def cb(_hmon, _hdc, lprc, _lparam):
+            r = lprc.contents
+            rects.append((r.left, r.top, r.right, r.bottom))
+            return 1
+        ctypes.windll.user32.EnumDisplayMonitors(0, 0, proc(cb), 0)
+        rects.sort(key=lambda r: (r[0], r[1]))   # screen 1 = leftmost
+        return rects
+    except Exception:
+        return []
+
+
 @tool("take_screenshot")
 def take_screenshot(args: dict, ctx: ToolContext) -> ToolResult:
     # PIL.ImageGrab directly — pyautogui's import chain costs seconds on
@@ -51,12 +73,37 @@ def take_screenshot(args: dict, ctx: ToolContext) -> ToolResult:
     out_dir = Path(ctx.config.screenshot_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"anna_{datetime.now():%Y%m%d_%H%M%S}.png"
-    ImageGrab.grab().save(str(path), "PNG")
+
+    monitors = _monitor_rects()
+    try:
+        screen = int(args.get("screen") or 0)
+    except (TypeError, ValueError):
+        screen = 0
+
+    note = ""
+    if screen and monitors:
+        if 1 <= screen <= len(monitors):
+            ImageGrab.grab(bbox=monitors[screen - 1], all_screens=True).save(str(path), "PNG")
+            note = f" (screen {screen})"
+        else:
+            # asked for a monitor that doesn't exist — grab everything + say so
+            ImageGrab.grab(all_screens=True).save(str(path), "PNG")
+            note = (f" — you asked for screen {screen} but I only see "
+                    f"{len(monitors)}, so I captured all of them")
+    elif len(monitors) > 1:
+        # multi-monitor, no target -> capture the whole virtual desktop so
+        # nothing is missed (bare grab() only gets the primary monitor)
+        ImageGrab.grab(all_screens=True).save(str(path), "PNG")
+        note = f" (all {len(monitors)} screens)"
+    else:
+        ImageGrab.grab().save(str(path), "PNG")
 
     payload = {
         "type": "screenshot",
         "full_path": str(path),
         "thumb_data_url": _make_thumbnail(path),   # may be None (still fine)
         "timestamp": datetime.now().strftime("%I:%M %p").lstrip("0"),
+        "screen": screen or None,
+        "monitor_count": len(monitors),
     }
-    return ToolResult(True, "Screenshot captured.", data=payload)
+    return ToolResult(True, f"Screenshot captured{note}.", data=payload)

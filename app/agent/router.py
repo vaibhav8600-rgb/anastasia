@@ -106,8 +106,23 @@ def match_rule(raw: str, config, memory=None) -> Optional[ActionPlan]:
                           requires_confirmation=confirm, confirmation_message=confirm_msg)
 
     # --- screenshot -------------------------------------------------
-    if t == "screenshot" or re.search(r"\b(take|grab|capture)\b.*\bscreenshot\b", t):
-        return plan("take_screenshot", msg="Screenshot coming right up.")
+    if re.search(r"\bscreenshot\b", t) and (
+            t == "screenshot" or re.search(r"\b(take|grab|capture)\b", t)
+            or re.match(r"screenshot\b", t)):
+        # optional monitor target: "screenshot of screen 2" / "monitor 1" /
+        # "second screen" / "primary monitor"
+        args = {}
+        mapping = {"one": 1, "first": 1, "primary": 1, "main": 1,
+                   "two": 2, "second": 2, "three": 3, "third": 3}
+        num = r"(\d+|one|two|three|first|second|third|primary|main)"
+        m = re.search(rf"\b(?:screen|monitor|display)\s*(?:number\s*)?{num}\b", t) \
+            or re.search(rf"\b{num}\s+(?:screen|monitor|display)\b", t)
+        if m:
+            word = m.group(1)
+            args["screen"] = int(word) if word.isdigit() else mapping.get(word, 0)
+        elif re.search(r"\ball\b.*\bscreens?\b|\bboth\b.*\bscreens?\b", t):
+            args["screen"] = 0   # explicit all-screens
+        return plan("take_screenshot", args=args, msg="Screenshot coming right up.")
 
     # --- clipboard --------------------------------------------------
     if re.search(r"\bsummari[sz]e\b.*\bclipboard\b", t):
