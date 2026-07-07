@@ -263,6 +263,9 @@ class CommandPipeline:
                 if brain is not None:
                     trace.provider = brain.last.provider
                     trace.failover = brain.last.failover
+                    trace.data_classes = sorted(
+                        c.value for c in
+                        (getattr(brain, "last_data_classes", None) or ()))
 
             trace.intent = plan.intent
             trace.args = plan.arguments

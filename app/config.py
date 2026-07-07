@@ -82,6 +82,9 @@ class AppConfig(BaseModel):
     groq_api_key: str = ""
     cloud_model: str = "llama-3.3-70b-versatile"
     cloud_timeout_s: float = 8.0          # Groq answers ~1s; >8s = fail over
+    # Privacy (8C): clipboard text may only reach the cloud with this opt-in.
+    # Files, screenshots and raw audio NEVER leave the machine regardless.
+    allow_clipboard_to_cloud: bool = False
     ollama_timeout: int = 20
     ollama_keep_alive: str = "30m"   # keeps the model loaded between requests
     ollama_num_predict: int = 220    # hard cap on generated tokens

@@ -308,6 +308,23 @@ function settingsHtml(s) {
       <input id="set-cloud_timeout_s" type="number" step="0.5" min="2" max="30"
              value="${esc(s.cloud_timeout_s || 8)}"></div>
 
+    <h4 class="settings-section">Privacy</h4>
+    <ul class="settings-hint" style="margin:0 0 10px 18px">
+      <li>Instant commands (open apps, screenshots…) never use any AI model.</li>
+      <li>Hybrid mode sends only your transcribed/typed text and recent chat
+          turns to Groq.</li>
+      <li>Files, screenshots and raw microphone audio NEVER leave this PC.</li>
+      <li>Clipboard text stays local unless you enable the toggle below.</li>
+      <li>Local-only mode sends nothing anywhere, ever.</li>
+    </ul>
+    <div class="form-row" style="flex-direction:row;align-items:center;gap:10px">
+      <input type="checkbox" id="set-allow_clipboard_to_cloud"
+             ${s.allow_clipboard_to_cloud ? "checked" : ""} style="width:auto">
+      <label for="set-allow_clipboard_to_cloud" style="margin:0">
+        Allow clipboard text to be summarized by the cloud brain (faster).
+        Off = clipboard never leaves this PC.</label>
+    </div>
+
     <h4 class="settings-section">Local model</h4>
     <div class="form-row"><label>Ollama URL</label>
       <input id="set-ollama_url" value="${esc(s.ollama_url || "")}"></div>
@@ -405,6 +422,7 @@ function collectSettings() {
     brain_mode: val("brain_mode"),
     cloud_model: val("cloud_model"),
     cloud_timeout_s: parseFloat(val("cloud_timeout_s")) || 8,
+    allow_clipboard_to_cloud: !!$("#set-allow_clipboard_to_cloud")?.checked,
     // key only travels when the user actually typed one (never the mask)
     ...(val("groq_api_key") ? { groq_api_key: val("groq_api_key") } : {}),
     faster_whisper_model: val("faster_whisper_model"),

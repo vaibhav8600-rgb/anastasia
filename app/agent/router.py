@@ -383,5 +383,6 @@ class Agent:
         from app.tools import ToolContext, ToolResult, run_tool
         if plan.intent in ("ask_clarification", "no_action"):
             return ToolResult(True, plan.assistant_message or "Okay.")
-        ctx = ToolContext(config=self.config, memory=self.memory, llm=self.llm)
+        ctx = ToolContext(config=self.config, memory=self.memory, llm=self.llm,
+                          brain=self.brain)
         return run_tool(plan.tool_name or plan.intent, plan.arguments, ctx)

@@ -26,6 +26,7 @@ class CommandTrace:
     llm_used: bool = False
     provider: str = ""              # groq | ollama | "" (no LLM)
     failover: bool = False          # cloud failed, local answered
+    data_classes: list = field(default_factory=list)  # privacy classes sent
     stt_ms: float = 0.0
     routing_ms: float = 0.0
     llm_ms: float = 0.0
@@ -45,6 +46,7 @@ class CommandTrace:
             f"LLM used: {str(self.llm_used).lower()}"
             + (f" | Provider: {self.provider}"
                + (" (failover)" if self.failover else "") if self.provider else "")
+            + (f" | Data: {','.join(self.data_classes)}" if self.data_classes else "")
             + "\n"
             f"stt_ms: {self.stt_ms:.0f}ms | Routing: {self.routing_ms:.0f}ms | "
             f"LLM: {self.llm_ms:.0f}ms | "

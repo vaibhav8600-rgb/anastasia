@@ -33,17 +33,26 @@ def summarize_clipboard(args: dict, ctx: ToolContext) -> ToolResult:
     text = (_clip().paste() or "").strip()
     if not text:
         return ToolResult(False, "Your clipboard is empty — copy some text first, then ask me again.")
-    if ctx.llm is None:
+    if ctx.llm is None and ctx.brain is None:
         return ToolResult(False, "I need the local AI model for that, and it isn't available right now.")
     if len(text) > _MAX_SUMMARY_INPUT:
         text = text[:_MAX_SUMMARY_INPUT]
 
     from app.llm.ollama_client import OllamaError
     from app.llm.prompt_builder import build_summarize_messages
+    messages = build_summarize_messages(text, ctx.config, ctx.memory)
     try:
-        summary = ctx.llm.chat(
-            build_summarize_messages(text, ctx.config, ctx.memory),
-            json_format=False, temperature=0.6).strip()
+        if ctx.brain is not None:
+            # Privacy-aware routing (8C): CLIPBOARD reaches the cloud only
+            # with the explicit opt-in; otherwise the router keeps it local.
+            from app.llm.providers import DataClass
+            summary = ctx.brain.complete(
+                "chat", messages,
+                payload_classes={DataClass.TRANSCRIPT, DataClass.CLIPBOARD},
+            ).text.strip()
+        else:
+            summary = ctx.llm.chat(messages, json_format=False,
+                                   temperature=0.6).strip()
     except OllamaError as e:
         return ToolResult(False, str(e))
     from app.llm.intent_parser import strip_thinking

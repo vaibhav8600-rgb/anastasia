@@ -549,6 +549,7 @@ class Controller:
                 "brain_mode": c.brain_mode,
                 "cloud_model": c.cloud_model,
                 "cloud_timeout_s": c.cloud_timeout_s,
+                "allow_clipboard_to_cloud": c.allow_clipboard_to_cloud,
                 "groq_key_masked": self._masked_groq_key(),
                 "groq_key_set": self.agent.brain.groq.configured()
                                 if hasattr(self.agent, "brain") else False,
@@ -571,6 +572,7 @@ class Controller:
         "faster_whisper_model": str, "stt_language": str,
         "silence_seconds": float, "max_record_seconds": int,
         "brain_mode": str, "cloud_model": str, "cloud_timeout_s": float,
+        "allow_clipboard_to_cloud": bool,
     }
     _SETTINGS_CHOICES = {
         "animation_quality": {"low", "medium", "high"},

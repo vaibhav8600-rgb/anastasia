@@ -37,6 +37,8 @@ def estimate_tokens(text: str) -> int:
 def _chat_memory_lines(memory) -> list[str]:
     lines = []
     for key in _SAFE_MEMORY_KEYS:
+        if key.startswith("private_"):
+            continue  # hard privacy rule (8C): private_ keys never in prompts
         try:
             value = memory.get(key, None) if memory is not None else None
         except Exception:
@@ -79,7 +81,7 @@ def build_chat_messages(user_text: str, config, memory) -> list:
 
 
 def persona_prompt(config, memory) -> str:
-    user = memory.get("user_name", "the user")
+    user = memory.get("user_name", "the user") if memory is not None else "the user"
     return (
         f"You are {config.assistant_name}, but everyone calls you {config.assistant_nickname}. "
         f"You are {user}'s local desktop voice assistant and companion. "

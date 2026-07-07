@@ -17,11 +17,45 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from enum import Enum
 
 import requests
 
 from app.agent.devlog import devlog
 from app.llm.ollama_client import OllamaError
+
+
+class DataClass(Enum):
+    """Privacy classification of everything inside an LLM payload (8C).
+    The cloud gate is enforced in the provider, not by caller convention."""
+
+    TRANSCRIPT = "transcript"          # cloud-allowed in hybrid mode
+    CHAT_CONTEXT = "chat_context"      # cloud-allowed (recent turns, memory)
+    CLIPBOARD = "clipboard"            # cloud only with explicit opt-in
+    FILE_CONTENT = "file_content"      # NEVER cloud
+    SCREENSHOT = "screenshot"          # NEVER cloud
+    AUDIO = "audio"                    # NEVER cloud
+
+
+NEVER_CLOUD = {DataClass.FILE_CONTENT, DataClass.SCREENSHOT, DataClass.AUDIO}
+
+
+class PrivacyViolation(Exception):
+    """A never-cloud payload class reached the cloud provider."""
+
+
+def cloud_allowed(payload_classes, config) -> tuple[bool, str]:
+    """(allowed, reason-if-not). Used by the router to route locally and by
+    the Groq provider as a hard gate."""
+    classes = set(payload_classes or ())
+    blocked = classes & NEVER_CLOUD
+    if blocked:
+        names = ", ".join(sorted(c.value for c in blocked))
+        return False, f"{names} never leaves this PC"
+    if DataClass.CLIPBOARD in classes and \
+            not getattr(config, "allow_clipboard_to_cloud", False):
+        return False, "clipboard kept local (opt-in is off)"
+    return True, ""
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 CIRCUIT_FAILURES = 3          # consecutive failures that open the circuit
@@ -88,7 +122,12 @@ class GroqProvider:
             return False
 
     def complete(self, messages, *, json_mode: bool, max_tokens: int,
-                 temperature: float, timeout_s: float) -> LLMResult:
+                 temperature: float, timeout_s: float,
+                 payload_classes=None) -> LLMResult:
+        allowed, reason = cloud_allowed(payload_classes, self.config)
+        if not allowed:
+            # Hard gate (spec 8C.1) — never a caller convention.
+            raise PrivacyViolation(reason)
         payload = {
             "model": self.config.cloud_model,
             "messages": messages,
@@ -210,23 +249,35 @@ class BrainRouter:
             "ts": time.strftime("%H:%M:%S"), "kind": kind,
             "provider": result.provider, "latency_ms": round(result.latency_ms),
             "error": result.error, "failover": result.failover,
+            "data_classes": sorted(
+                c.value for c in (getattr(self, "last_data_classes", None) or ())),
         })
         self.last = result
 
     # ------------------------------------------------------------ core
-    def complete(self, kind: str, messages: list, model: str = None) -> LLMResult:
+    def complete(self, kind: str, messages: list, model: str = None,
+                 payload_classes=None) -> LLMResult:
         """Returns an LLMResult on success. Raises OllamaError family
         (incl. BrainUnavailable) on total failure so the pipeline's existing
-        recovery paths keep working."""
+        recovery paths keep working. payload_classes drives the privacy
+        routing: never-cloud/clipboard-without-opt-in stays on Ollama."""
         params = KIND_PARAMS[kind]
-        use_groq = self.mode() == "hybrid" and not self.circuit_open()
+        if payload_classes is None:
+            payload_classes = ({DataClass.TRANSCRIPT, DataClass.CHAT_CONTEXT}
+                               if kind == "chat" else {DataClass.TRANSCRIPT})
+        self.last_data_classes = payload_classes
+        allowed, privacy_reason = cloud_allowed(payload_classes, self.config)
+        use_groq = self.mode() == "hybrid" and not self.circuit_open() and allowed
+        if self.mode() == "hybrid" and not allowed:
+            devlog.log(f"Privacy routing: {privacy_reason} — using the local brain.")
 
         if use_groq:
             result = self.groq.complete(
                 messages, json_mode=params["json_mode"],
                 max_tokens=params["groq_max_tokens"],
                 temperature=params["temperature"],
-                timeout_s=getattr(self.config, "cloud_timeout_s", 8.0))
+                timeout_s=getattr(self.config, "cloud_timeout_s", 8.0),
+                payload_classes=payload_classes)
             self._record(kind, result)
             if result.ok:
                 with self._lock:

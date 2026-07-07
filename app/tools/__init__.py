@@ -17,7 +17,8 @@ class ToolResult:
 class ToolContext:
     config: Any
     memory: Any = None
-    llm: Any = None  # OllamaClient, for summarize_clipboard
+    llm: Any = None    # OllamaClient (local), for summarize_clipboard
+    brain: Any = None  # BrainRouter — privacy-aware provider routing
 
 
 TOOL_REGISTRY: Dict[str, Callable] = {}
