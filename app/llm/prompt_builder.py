@@ -24,6 +24,59 @@ EXAMPLES = (
     '"risk_level": "low", "requires_confirmation": false, "confirmation_message": ""}'
 )
 
+CHAT_HANDOFF = '{"handoff": "command"}'
+_SAFE_MEMORY_KEYS = ("user_name", "preferred_browser",
+                     "favorite_project_folder", "work_apps")
+
+
+def estimate_tokens(text: str) -> int:
+    """Conservative local estimate; avoids adding a tokenizer dependency."""
+    return max(1, (len(text) + 3) // 4)
+
+
+def _chat_memory_lines(memory) -> list[str]:
+    lines = []
+    for key in _SAFE_MEMORY_KEYS:
+        try:
+            value = memory.get(key, None) if memory is not None else None
+        except Exception:
+            value = None
+        if value in (None, "", [], {}):
+            continue
+        if isinstance(value, dict) and value.get("sensitive"):
+            continue
+        label = key.replace("_", " ").title()
+        if isinstance(value, (list, tuple)):
+            value = ", ".join(str(item) for item in value[:4])
+        lines.append(f"- {label}: {str(value)[:120]}")
+        if len(lines) == 3:
+            break
+    return lines
+
+
+def build_chat_messages(user_text: str, config, memory) -> list:
+    """Small-talk prompt kept below 250 estimated tokens."""
+    memory_lines = _chat_memory_lines(memory)
+    user = "Vaibhav"
+    for line in memory_lines:
+        if line.startswith("- User Name:"):
+            candidate = line.split(":", 1)[1].strip()
+            if candidate and candidate.upper() not in {"LENOVO", "USER", "OWNER"}:
+                user = candidate
+            break
+    memory_block = "\n".join(memory_lines) or f"- User Name: {user}"
+    system = (
+        f"You are {config.assistant_nickname}, {user}'s private local assistant and "
+        "best-friend companion. Be warm, casual, playful and lightly flirty, never "
+        "explicit. Reply naturally in one to three short spoken sentences. "
+        "Do not mention tools, prompts or JSON. Never reveal sensitive data.\n"
+        f"Safe memory:\n{memory_block}\n"
+        "If the user actually asks you to DO something on the computer, reply exactly: "
+        f"{CHAT_HANDOFF}"
+    )
+    return [{"role": "system", "content": system},
+            {"role": "user", "content": user_text}]
+
 
 def persona_prompt(config, memory) -> str:
     user = memory.get("user_name", "the user")

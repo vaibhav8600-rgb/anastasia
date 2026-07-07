@@ -7,6 +7,7 @@ pywebview>=5.0
 # Core
 pydantic>=2.5
 requests>=2.31
+rapidfuzz>=3.9
 
 # Voice input + STT
 sounddevice>=0.4.6
@@ -24,3 +25,6 @@ pytest>=8.0
 
 # Optional — uncomment if you want wake-word mode ("Hey Jarvis"):
 # openwakeword>=0.6
+
+# Optional — natural Kokoro voice (also download model + voices in Settings):
+# kokoro-onnx>=0.5

@@ -24,6 +24,7 @@ class CommandTrace:
     intent: str = ""
     args: dict = field(default_factory=dict)
     llm_used: bool = False
+    stt_ms: float = 0.0
     routing_ms: float = 0.0
     llm_ms: float = 0.0
     safety_ms: float = 0.0
@@ -40,7 +41,8 @@ class CommandTrace:
             f"Intent: {self.intent}\n"
             f"Args: {self.args}\n"
             f"LLM used: {str(self.llm_used).lower()}\n"
-            f"Routing: {self.routing_ms:.0f}ms | LLM: {self.llm_ms:.0f}ms | "
+            f"stt_ms: {self.stt_ms:.0f}ms | Routing: {self.routing_ms:.0f}ms | "
+            f"LLM: {self.llm_ms:.0f}ms | "
             f"Safety: {self.safety_ms:.0f}ms | Tool: {self.tool_ms:.0f}ms | "
             f"TTS queued: {self.tts_ms:.0f}ms | Total: {self.total_ms:.0f}ms"
         )

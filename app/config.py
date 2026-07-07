@@ -48,7 +48,18 @@ _DEFAULT_MIGRATIONS = {
     "ollama_timeout": (120, 20),
     "silence_seconds": (1.6, 1.2),
     "max_record_seconds": (30, 8),
+    "stt_language": ("auto", "en"),
 }
+
+
+class GarbleConfig(BaseModel):
+    no_speech_prob: float = 0.6
+    avg_logprob: float = -1.0
+    compression_ratio: float = 2.4
+
+
+class STTConfig(BaseModel):
+    garble: GarbleConfig = Field(default_factory=GarbleConfig)
 
 
 class AppConfig(BaseModel):
@@ -63,6 +74,7 @@ class AppConfig(BaseModel):
     # LLM (Ollama)
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.2:3b"
+    chat_model: str = ""                  # empty = use ollama_model
     ollama_timeout: int = 20
     ollama_keep_alive: str = "30m"   # keeps the model loaded between requests
     ollama_num_predict: int = 220    # hard cap on generated tokens
@@ -77,6 +89,7 @@ class AppConfig(BaseModel):
     push_to_talk_hotkey: str = "ctrl+alt+space"
 
     # STT
+    stt: STTConfig = Field(default_factory=STTConfig)
     stt_backend: str = "faster_whisper"  # "faster_whisper" | "whisper_cpp"
     faster_whisper_model: str = "base"   # tiny | base | small ...
     whisper_cpp_exe: str = ""            # path to whisper.cpp main/whisper-cli exe
@@ -88,14 +101,18 @@ class AppConfig(BaseModel):
     max_record_seconds: int = 8
 
     # TTS
-    tts_backend: str = "auto"            # "auto" | "piper" | "windows" | "off"
+    tts_backend: str = "auto"            # auto | piper | kokoro | windows | off
     piper_exe: str = ""                  # path to piper.exe
     piper_voice: str = ""                # path to .onnx voice model
+    piper_length_scale: float = 1.08      # >1 is a slightly more relaxed pace
+    kokoro_model: str = ""               # path to kokoro-v1.0.onnx
+    kokoro_voices: str = ""              # path to voices-v1.0.bin
+    kokoro_voice: str = "af_heart"
     tts_rate: float = 1.0                # speed multiplier 0.5..2.0
     tts_volume: int = 100                # 0..100 (SAPI only; Piper ignores)
 
     # STT language: "auto" or a code like en / hi / mr
-    stt_language: str = "auto"
+    stt_language: str = "en"
 
     # Safety / behavior
     confirmation_mode: str = "strict"    # "strict" | "normal"

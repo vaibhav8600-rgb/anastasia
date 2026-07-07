@@ -100,13 +100,15 @@ class UIBridge:
         self.dispatch("toggle_sync", {"name": "wake_word", "value": bool(on)})
 
     def show(self, action_id, transcript, plan, safety,
-             on_approve=None, on_cancel=None, on_voice=None) -> None:
-        """confirm_panel.show — renders the amber approval card in JS."""
+             on_approve=None, on_cancel=None, on_voice=None,
+             kind="safety", message="") -> None:
+        """Render a safety approval or neutral fuzzy-confirmation card."""
         self.dispatch("confirm_request", {
             "id": action_id, "transcript": transcript,
             "tool": plan.tool_name, "arguments": plan.arguments,
             "risk": safety.risk_level,
-            "message": plan.confirmation_message or safety.reason
+            "kind": kind,
+            "message": message or plan.confirmation_message or safety.reason
                        or "Do you want me to go ahead?",
         })
 
@@ -184,6 +186,15 @@ class JsApi:
 
     def test_voice(self) -> None:
         self._controller.test_voice()
+
+    def pick_voice_file(self, kind) -> str:
+        return self._controller.pick_voice_file(str(kind or ""))
+
+    def validate_piper(self) -> None:
+        self._controller.validate_piper()
+
+    def validate_kokoro(self) -> None:
+        self._controller.validate_kokoro()
 
     def test_microphone(self) -> None:
         self._controller.test_microphone()

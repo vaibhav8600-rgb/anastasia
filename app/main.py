@@ -12,6 +12,7 @@ Technical/diagnostic output goes to the devlog, not the chat.
 import sys
 import tempfile
 import threading
+import re
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -26,7 +27,7 @@ from app.config import AppConfig
 from app.voice.recorder import MicrophoneError, Recorder, microphone_available
 from app.voice.speech_output import SpeechOutput
 
-APPROVE_WORDS = {"approve", "approved", "yes", "yeah", "yep", "confirm", "go ahead", "do it"}
+APPROVE_WORDS = {"approve", "approved", "yes", "yeah", "yep", "haan", "confirm", "go ahead", "do it"}
 CANCEL_WORDS = {"cancel", "no", "nope", "stop", "abort", "never mind", "nevermind"}
 
 
@@ -51,6 +52,7 @@ class Controller:
         self._mic_lock = threading.Lock()
         self._stt_generation = 0           # bumped to drop stale STT results
         self._record_source = "voice"
+        self._low_mic_warned = False
         self.last_state = "ready"          # for full_state re-hydration
         self.chips = {}                    # top-bar status chips
 
@@ -102,9 +104,11 @@ class Controller:
         self.last_state = state
         self._ui(self.ui.set_state, state, detail)
 
-    def ask_confirmation(self, action_id: int, transcript: str, plan, safety) -> None:
+    def ask_confirmation(self, action_id: int, transcript: str, plan, safety,
+                         kind: str = "safety", message: str = "") -> None:
         self._ui(self.ui.confirm_panel.show, action_id, transcript, plan, safety,
-                 self.approve_pending, self.cancel_pending, self.voice_confirm)
+                 self.approve_pending, self.cancel_pending, self.voice_confirm,
+                 kind, message)
 
     def hide_confirmation(self) -> None:
         self._ui(self.ui.confirm_panel.hide)
@@ -135,6 +139,15 @@ class Controller:
         the setup card. Also wired to the setup card's Recheck button."""
         issues = []
         model_state = "offline"
+        from app.llm.prompt_builder import (
+            build_chat_messages, build_intent_messages, estimate_tokens,
+        )
+        command_messages = build_intent_messages("hello", self.config, self.memory)
+        chat_messages = build_chat_messages("hello", self.config, self.memory)
+        command_tokens = estimate_tokens(command_messages[0]["content"])
+        chat_tokens = estimate_tokens(chat_messages[0]["content"])
+        devlog.log(f"Prompt sizes: command≈{command_tokens} tokens | "
+                   f"chat≈{chat_tokens} tokens")
         if self.agent.llm.is_available():
             models = self.agent.llm.list_models()
             if any(self.config.ollama_model in m for m in models):
@@ -142,11 +155,20 @@ class Controller:
                 self._push_chips(model_state)
                 devlog.log(f"Ollama running (model: {self.config.ollama_model}). "
                            "Warming up so the first command is fast...")
-                from app.llm.prompt_builder import build_intent_messages
-                ms = self.agent.llm.warm_up(
-                    build_intent_messages("hello", self.config, self.memory))
+                ms = self.agent.llm.warm_up(command_messages)
                 devlog.log(f"Model warm-up done in {ms:.0f}ms." if ms is not None
                            else "Model warm-up failed (will load on first use).")
+                chat_model = self.config.chat_model or self.config.ollama_model
+                if chat_model != self.config.ollama_model:
+                    if any(chat_model in model for model in models):
+                        chat_ms = self.agent.llm.warm_up(chat_messages, model=chat_model)
+                        devlog.log(
+                            f"Chat model {chat_model} warm-up: {chat_ms:.0f}ms."
+                            if chat_ms is not None else
+                            f"Chat model {chat_model} warm-up failed.")
+                    else:
+                        issues.append(f"Chat model '{chat_model}' is not installed. "
+                                      f"Run: ollama pull {chat_model}")
                 model_state = "connected"
             else:
                 model_state = "missing"
@@ -172,6 +194,8 @@ class Controller:
         self._piper_ok = piper_available(self.config)
         if not self._piper_ok:
             devlog.warn("Piper voice not configured — using the built-in Windows voice.")
+        from app.voice.tts_kokoro import kokoro_available
+        self._kokoro_ok = kokoro_available(self.config)
 
         self._push_chips(model_state)
         if issues:
@@ -181,15 +205,27 @@ class Controller:
 
     def _push_chips(self, model_state: str) -> None:
         """Top-bar chips: Local model / Mic / Voice (spec sec 4/18)."""
+        backend = self.config.tts_backend
+        if backend == "kokoro" and getattr(self, "_kokoro_ok", False):
+            voice_label, voice_state = \
+                f"Voice: Kokoro · {self.config.kokoro_voice}", "ok"
+        elif backend in ("auto", "piper") and getattr(self, "_piper_ok", False):
+            stem = Path(self.config.piper_voice).stem
+            stem = re.sub(r"^(?:en_[A-Z]{2}-)?|-(?:low|medium|high)$", "", stem)
+            voice_label, voice_state = f"Voice: Piper · {stem}", "ok"
+        elif backend == "off":
+            voice_label, voice_state = "Voice: Off", "warn"
+        elif backend in ("piper", "kokoro"):
+            voice_label, voice_state = f"Voice: {backend.title()} setup needed", "warn"
+        else:
+            voice_label, voice_state = "Voice: Windows fallback", "warn"
         self.chips = {
             "model": {"label": f"Local model: {self.config.ollama_model}",
                       "state": model_state},
             "mic": {"label": "Mic: Ready" if getattr(self, "_mic_ok", True)
                     else "Mic: Missing",
                     "state": "ok" if getattr(self, "_mic_ok", True) else "bad"},
-            "voice": {"label": "Voice: Piper" if getattr(self, "_piper_ok", False)
-                      else "Voice: Windows fallback",
-                      "state": "ok" if getattr(self, "_piper_ok", False) else "warn"},
+            "voice": {"label": voice_label, "state": voice_state},
         }
         if hasattr(self.ui, "dispatch"):
             self.ui.dispatch("status", {"chips": self.chips})
@@ -271,32 +307,42 @@ class Controller:
 
     def _finish_recording(self, generation: int) -> None:
         try:
-            text = self._transcribe_recording()
+            result = self._transcribe_recording()
         except Exception as e:
             devlog.exception(e, context="STT")
             self.show_error("I couldn't transcribe that — try once more?")
             self.set_state("ready")
             return
         if generation != self._stt_generation:
-            devlog.log(f"Stale STT result dropped: {text!r}")
+            devlog.log(f"Stale STT result dropped: {result.text!r}")
             return
-        if not text:
+        if not result.text:
             # Empty STT must never set the busy state (sec 8/9).
             self.show_info("I didn't catch that clearly. Try once more?")
             self.set_state("ready")
             return
-        self.pipeline.submit(text, source=self._record_source)
+        self.pipeline.submit(result.text, source=self._record_source,
+                             confidence=result.confidence, stt_ms=result.stt_ms)
 
-    def _transcribe_recording(self) -> str:
-        """Stop the recorder, run STT on a temp WAV, always delete the audio."""
+    def _transcribe_recording(self):
+        """Stop recording and return text plus STT confidence metadata."""
+        from app.voice.stt_whisper import TranscriptionResult
         data = self.recorder.stop()
         if data is None or len(data) < self.config.sample_rate // 4:
-            return ""
+            return TranscriptionResult(text="")
+        import numpy as np
+        peak = float(np.max(np.abs(data.astype(np.float32)))) / 32768.0
+        if peak < 0.05 and not self._low_mic_warned:
+            self._low_mic_warned = True
+            devlog.warn(f"Low microphone level detected (peak: {peak * 100:.1f}%).")
+            self.show_info("Your mic level seems very low — check Windows input volume.")
+        from app.voice.recorder import normalize_audio_for_stt
+        data = normalize_audio_for_stt(data, self.config.sample_rate, 16000)
         wav_path = Path(tempfile.gettempdir()) / "anna_input.wav"
         try:
-            self.recorder.save_wav(data, wav_path)
+            self.recorder.save_wav(data, wav_path, sample_rate=16000)
             from app.voice.stt_whisper import transcribe_wav
-            return transcribe_wav(str(wav_path), self.config).strip()
+            return transcribe_wav(str(wav_path), self.config)
         finally:
             wav_path.unlink(missing_ok=True)  # never keep raw audio
 
@@ -314,7 +360,8 @@ class Controller:
             try:
                 self.recorder.start()
                 threading.Event().wait(3.0)
-                text = self._transcribe_recording() or ""
+                result = self._transcribe_recording()
+                text = result.text
             except Exception as e:
                 devlog.exception(e, context="voice confirm")
                 self.show_error("Voice confirm didn't work — use the buttons.")
@@ -436,11 +483,16 @@ class Controller:
                 "user_name": str(self.memory.get("user_name", "") or ""),
                 "ollama_url": c.ollama_url,
                 "ollama_model": c.ollama_model,
+                "chat_model": c.chat_model or c.ollama_model,
                 "ollama_timeout": c.ollama_timeout,
                 "animation_quality": c.animation_quality,
                 "tts_backend": c.tts_backend,
                 "piper_exe": c.piper_exe,
                 "piper_voice": c.piper_voice,
+                "piper_length_scale": c.piper_length_scale,
+                "kokoro_model": c.kokoro_model,
+                "kokoro_voices": c.kokoro_voices,
+                "kokoro_voice": c.kokoro_voice,
                 "tts_rate": c.tts_rate,
                 "tts_volume": c.tts_volume,
                 "faster_whisper_model": c.faster_whisper_model,
@@ -450,17 +502,21 @@ class Controller:
             })
 
     _SETTINGS_FIELDS = {
-        "ollama_url": str, "ollama_model": str, "ollama_timeout": int,
+        "ollama_url": str, "ollama_model": str, "chat_model": str,
+        "ollama_timeout": int,
         "animation_quality": str,
         "tts_backend": str, "piper_exe": str, "piper_voice": str,
+        "piper_length_scale": float,
+        "kokoro_model": str, "kokoro_voices": str, "kokoro_voice": str,
         "tts_rate": float, "tts_volume": int,
         "faster_whisper_model": str, "stt_language": str,
         "silence_seconds": float, "max_record_seconds": int,
     }
     _SETTINGS_CHOICES = {
         "animation_quality": {"low", "medium", "high"},
-        "tts_backend": {"auto", "piper", "windows", "off"},
-        "faster_whisper_model": {"tiny", "base", "small"},
+        "tts_backend": {"auto", "piper", "kokoro", "windows", "off"},
+        "kokoro_voice": {"af_heart", "af_bella"},
+        "faster_whisper_model": {"tiny", "base", "base.en", "small", "small.en"},
         "stt_language": {"auto", "en", "hi", "mr"},
     }
 
@@ -496,6 +552,10 @@ class Controller:
             if self.config.tts_backend == "piper" and not piper_available(self.config):
                 self.show_info("Piper is selected but not fully configured — "
                                "I'll stay silent until the exe and voice paths are set.")
+            from app.voice.tts_kokoro import kokoro_available
+            if self.config.tts_backend == "kokoro" and not kokoro_available(self.config):
+                self.show_info("Kokoro is selected but its package or model files "
+                               "are missing — check the setup card.")
             threading.Thread(target=self.run_health_checks, daemon=True).start()
 
     # ------------------------------------------------------- settings tests
@@ -505,12 +565,59 @@ class Controller:
             self.ui.dispatch("test_result", {"kind": kind, "ok": ok,
                                              "message": message})
 
+    def pick_voice_file(self, kind: str) -> str:
+        """Open a native picker for a known TTS setup field."""
+        file_types = {
+            "piper_exe": ("Piper executable (*.exe)",),
+            "piper_voice": ("Piper voice (*.onnx)",),
+            "kokoro_model": ("Kokoro model (*.onnx)",),
+            "kokoro_voices": ("Kokoro voices (*.bin)",),
+        }
+        if kind not in file_types or not getattr(self.ui, "window", None):
+            return ""
+        try:
+            import webview
+            selected = self.ui.window.create_file_dialog(
+                webview.OPEN_DIALOG, allow_multiple=False,
+                file_types=file_types[kind])
+            return str(selected[0]) if selected else ""
+        except Exception as exc:
+            devlog.exception(exc, context="voice file picker")
+            return ""
+
+    def validate_piper(self) -> None:
+        def worker():
+            from app.voice.tts_piper import validate_piper_config
+            ok, message = validate_piper_config(self.config, play=True)
+            self._test_result("piper", ok, message)
+            self._piper_ok = ok
+            self._push_chips(self.chips.get("model", {}).get("state", "offline"))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def validate_kokoro(self) -> None:
+        def worker():
+            from app.voice.tts_kokoro import validate_kokoro_config
+            ok, message = validate_kokoro_config(self.config, play=True)
+            self._test_result("kokoro", ok, message)
+            self._kokoro_ok = ok
+            self._push_chips(self.chips.get("model", {}).get("state", "offline"))
+        threading.Thread(target=worker, daemon=True).start()
+
     def test_voice(self) -> None:
         """js_api: speak a sample line with the current voice settings."""
         from app.voice.tts_piper import piper_available
-        backend = ("Piper" if (self.config.tts_backend in ("auto", "piper")
-                               and piper_available(self.config))
-                   else "the built-in Windows voice")
+        from app.voice.tts_kokoro import kokoro_available
+        selected = self.config.tts_backend
+        if selected == "piper" and not piper_available(self.config):
+            self._test_result("voice", False, "Piper setup is incomplete.")
+            return
+        if selected == "kokoro" and not kokoro_available(self.config):
+            self._test_result("voice", False, "Kokoro setup is incomplete.")
+            return
+        backend = ("Kokoro" if selected == "kokoro" else
+                   "Piper" if selected in ("auto", "piper")
+                   and piper_available(self.config) else
+                   "the built-in Windows voice")
         self.speech.speak_async("Hi, it's Anna — this is how I sound right now. "
                                 "Do you like this voice?")
         self._test_result("voice", True, f"Speaking a sample with {backend}…")
@@ -542,7 +649,8 @@ class Controller:
                 self.recorder.start()
                 self._test_result("mic", True, "Recording 3 seconds — say something…")
                 threading.Event().wait(3.0)
-                text = self._transcribe_recording()
+                result = self._transcribe_recording()
+                text = result.text
             except Exception as e:
                 devlog.exception(e, context="mic test")
                 self._test_result("mic", False, "Microphone/STT failed — see Developer Tools.")

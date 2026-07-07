@@ -1,11 +1,14 @@
 """Intent router — hybrid rule-based matching + local LLM planning."""
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from app.llm.intent_parser import ActionPlan, parse_action_plan
-from app.llm.prompt_builder import build_intent_messages
+from app.llm.prompt_builder import (
+    CHAT_HANDOFF, build_chat_messages, build_intent_messages,
+)
 
 # Normalized spoken name -> canonical alias key in config.app_aliases
 APP_SYNONYMS = {
@@ -57,6 +60,38 @@ def clean_command(text: str, config) -> str:
     return normalize_command(text, config).cleaned
 
 
+_COMMAND_WORDS = (
+    "open", "close", "launch", "start", "run", "type", "copy", "paste",
+    "search", "find", "take", "capture", "read", "show", "summarize",
+    "minimize", "maximize", "switch", "save", "google", "youtube",
+)
+_CHAT_OPENERS = (
+    "who", "what", "why", "when", "where", "how", "are you", "do you",
+    "did you", "would you", "could you", "tell me", "explain", "hello",
+    "hi", "hey", "thanks", "thank you", "good morning", "good evening",
+)
+
+
+def classify_input_mode(raw: str, config=None) -> str:
+    """Cheap, deterministic classifier. Ambiguity deliberately means command."""
+    text = clean_command(raw, config) if config is not None else raw
+    text = (text or "").lower().strip(" .!?")
+    if not text:
+        return "command"
+    words = text.split()
+    if words[0] in _COMMAND_WORDS:
+        return "command"
+    if re.search(r"\b(?:open|close|launch|run|type|copy|paste|minimize|maximize)\b",
+                 text):
+        return "command"
+    if any(text == opener or text.startswith(opener + " ")
+           for opener in _CHAT_OPENERS):
+        return "chat"
+    if text in {"okay", "ok", "yes", "no", "maybe", "nice", "cool"}:
+        return "chat"
+    return "command"
+
+
 def match_rule(raw: str, config, memory=None) -> Optional[ActionPlan]:
     """Fast rule-based intent matching. Returns None to fall back to the LLM."""
     orig = clean_command(raw, config)
@@ -90,6 +125,14 @@ def match_rule(raw: str, config, memory=None) -> Optional[ActionPlan]:
         return plan("type_text", {"text": m.group(1)}, msg="Typing that for you.")
 
     # --- web search ---------------------------------------------------
+    m = re.match(r"open (?:the )?youtube (?:and )?search(?: for)?\s+(.+)", t)
+    if m:
+        import urllib.parse
+        query = m.group(1).strip()
+        url = "https://www.youtube.com/results?search_query=" + \
+              urllib.parse.quote_plus(query)
+        return plan("browser_open", {"url": url},
+                    msg=f"Searching YouTube for {query}.")
     m = re.match(r"(?:search (?:google|the web|web|online) for|google)\s+(.+)", t)
     if m:
         return plan("browser_open", {"query": m.group(1)},
@@ -114,6 +157,24 @@ def match_rule(raw: str, config, memory=None) -> Optional[ActionPlan]:
     if m:
         return plan("search_files", {"folder": m.group(2).strip(), "query": m.group(1).strip()},
                     msg=f"Looking for {m.group(1).strip()} in {m.group(2).strip()}.")
+
+    # --- window control (always confirmed by safety.py) ---------------
+    m = re.fullmatch(r"(close|minimize|maximize)(?: (?:this|the))? window", t)
+    if not m:
+        m = re.fullmatch(r"(close|minimize|maximize) this", t)
+    if m:
+        action = m.group(1)
+        return plan("window_control", {"action": action}, risk="medium",
+                    confirm=True, confirm_msg=f"{action.title()} the active window?")
+    m = re.fullmatch(r"close\s+(.+)", t)
+    if m:
+        target = re.sub(r"^(the )", "", m.group(1)).strip()
+        alias_map = {_norm(key): key for key in config.app_aliases}
+        key = alias_map.get(_norm(target))
+        if key:
+            return plan("window_control", {"action": "close", "app": key},
+                        risk="medium", confirm=True,
+                        confirm_msg=f"Close {key.title()}?")
 
     # --- open <something> ----------------------------------------------
     m = re.match(r"(open|launch|start|run)\s+(.+)", t)
@@ -152,6 +213,110 @@ def match_rule(raw: str, config, memory=None) -> Optional[ActionPlan]:
     return None
 
 
+@dataclass(frozen=True)
+class FuzzyMatch:
+    plan: ActionPlan
+    score: float
+    heard_target: str
+    matched_target: str
+
+    @property
+    def needs_confirmation(self) -> bool:
+        return 65 <= self.score < 85
+
+
+def _fuzzy_score(query: str, candidate: str) -> float:
+    """RapidFuzz score with a conservative boost for short STT homophones."""
+    try:
+        from rapidfuzz import fuzz
+        ratio = float(fuzz.ratio(query, candidate))
+        partial = float(fuzz.partial_ratio(query, candidate))
+    except ImportError:  # keeps typed/rule commands usable before dependencies install
+        from difflib import SequenceMatcher
+        ratio = partial = SequenceMatcher(None, query, candidate).ratio() * 100
+    score = max(ratio, partial * 0.9)
+    shared = len(set(query) & set(candidate))
+    if (" " not in query and " " not in candidate
+            and len(query) >= 4 and len(candidate) >= 4 and query[0] == candidate[0]
+            and abs(len(query) - len(candidate)) <= 1 and shared >= 3):
+        score = max(score, 72.0)
+    return min(score, 100.0)
+
+
+def _display_target(target: str) -> str:
+    special = {"vscode": "VS Code", "vs code": "VS Code", "mspaint": "Paint"}
+    return special.get(target, target.title())
+
+
+def match_fuzzy_command(raw: str, config) -> Optional[FuzzyMatch]:
+    """Recover short command-shaped STT mistakes between rules and the LLM."""
+    text = clean_command(raw, config).lower().strip(" .!?")
+    match = re.fullmatch(r"(\S+)\s+(.+)", text)
+    if not match:
+        return None
+    heard_verb, heard_target = match.groups()
+    heard_target = re.sub(r"^(?:the|my)\s+", "", heard_target).strip()
+    if len(heard_target.split()) > 4:
+        return None
+
+    verbs = ("open", "launch", "start", "run", "close", "minimize", "maximize")
+    verb = max(verbs, key=lambda item: _fuzzy_score(heard_verb, item))
+    verb_score = _fuzzy_score(heard_verb, verb)
+    if verb_score < 65:
+        return None
+
+    candidates = []
+    seen = set()
+    if verb in ("open", "launch", "start", "run", "close"):
+        for key in config.app_aliases:
+            normalized = _norm(key)
+            if normalized not in seen:
+                candidates.append(("app", key))
+                seen.add(normalized)
+    if verb in ("open", "launch", "start", "run"):
+        for folder in config.safe_folders:
+            name = Path(folder).name.lower()
+            if _norm(name) not in seen:
+                candidates.append(("folder", name))
+                seen.add(_norm(name))
+        for site in KNOWN_SITES:
+            if _norm(site) not in seen:
+                candidates.append(("site", site))
+                seen.add(_norm(site))
+    if not candidates:
+        return None
+
+    kind, target = max(candidates,
+                       key=lambda item: _fuzzy_score(heard_target, item[1]))
+    target_score = _fuzzy_score(heard_target, target)
+    score = min(verb_score, target_score)
+    if score < 65:
+        return None
+
+    display = _display_target(target)
+    if verb == "close":
+        plan = ActionPlan(
+            assistant_message=f"Closing {display}.", intent="window_control",
+            tool_name="window_control", arguments={"action": "close", "app": target},
+            risk_level="medium", requires_confirmation=True,
+            confirmation_message=f"Close {display}?",
+        )
+    elif kind == "app":
+        plan = ActionPlan(assistant_message=f"Opening {display} for you.",
+                          intent="open_app", tool_name="open_app",
+                          arguments={"app_name": target})
+    elif kind == "folder":
+        plan = ActionPlan(assistant_message=f"Opening your {display} folder.",
+                          intent="open_folder", tool_name="open_folder",
+                          arguments={"folder": target})
+    else:
+        plan = ActionPlan(assistant_message=f"Opening {display}.",
+                          intent="browser_open", tool_name="browser_open",
+                          arguments={"url": KNOWN_SITES[target]})
+    return FuzzyMatch(plan=plan, score=score, heard_target=heard_target,
+                      matched_target=display)
+
+
 class Agent:
     """Plans and executes commands. GUI drives the confirmation flow."""
 
@@ -167,6 +332,9 @@ class Agent:
         """Instant rule-based routing; never touches the LLM."""
         return match_rule(text, self.config, self.memory)
 
+    def plan_fuzzy(self, text: str) -> Optional[FuzzyMatch]:
+        return match_fuzzy_command(text, self.config)
+
     def plan_llm(self, text: str) -> ActionPlan:
         """LLM planning with one strict retry on bad JSON."""
         content = self.llm.chat(build_intent_messages(text, self.config, self.memory))
@@ -180,6 +348,23 @@ class Agent:
                 assistant_message="Sorry, I didn't quite get that — could you say it again for me?",
                 intent="ask_clarification", tool_name="ask_clarification")
         return ap
+
+    def plan_chat(self, text: str) -> tuple[ActionPlan, bool]:
+        """Fast plain-text chat; command handoff re-enters structured planning."""
+        chat_model = self.config.chat_model or self.config.ollama_model
+        content = self.llm.chat(
+            build_chat_messages(text, self.config, self.memory),
+            json_format=False, temperature=0.7, num_predict=100,
+            model=chat_model).strip()
+        normalized = content.strip("` \r\n")
+        if normalized.startswith("json\n"):
+            normalized = normalized[5:].strip()
+        if normalized == CHAT_HANDOFF:
+            return self.plan_llm(text), True
+        if not content:
+            content = "I'm here — try me once more?"
+        return ActionPlan(assistant_message=content, intent="no_action",
+                          tool_name="no_action"), False
 
     def plan(self, raw_text: str) -> ActionPlan:
         """Rule-based first; LLM fallback (kept for compatibility)."""

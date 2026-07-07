@@ -42,23 +42,32 @@ def test_piper_length_scale_inverts_rate():
 def test_voice_settings_roundtrip():
     bridge, window, controller = make_web_controller()
     controller.save_settings({
+        "chat_model": "llama3.2:1b",
         "tts_backend": "windows", "tts_rate": 1.4, "tts_volume": 70,
         "piper_exe": "C:/tools/piper/piper.exe",
         "piper_voice": "C:/tools/piper/amy.onnx",
+        "piper_length_scale": 1.08,
+        "kokoro_model": "C:/tools/kokoro/kokoro-v1.0.onnx",
+        "kokoro_voices": "C:/tools/kokoro/voices-v1.0.bin",
+        "kokoro_voice": "af_bella",
         "faster_whisper_model": "small", "stt_language": "en",
         "silence_seconds": 2.0, "max_record_seconds": 12,
     })
     c = controller.config
     assert (c.tts_backend, c.tts_rate, c.tts_volume) == ("windows", 1.4, 70)
+    assert c.chat_model == "llama3.2:1b"
     assert c.piper_exe.endswith("piper.exe")
+    assert c.piper_length_scale == 1.08 and c.kokoro_voice == "af_bella"
     assert (c.faster_whisper_model, c.stt_language) == ("small", "en")
     assert (c.silence_seconds, c.max_record_seconds) == (2.0, 12)
 
     controller.open_settings()
     payload = window.of_type("settings")[-1]["payload"]
     assert payload["tts_rate"] == 1.4
+    assert payload["chat_model"] == "llama3.2:1b"
     assert payload["stt_language"] == "en"
     assert payload["piper_voice"].endswith("amy.onnx")
+    assert payload["kokoro_model"].endswith("kokoro-v1.0.onnx")
 
 
 def test_invalid_choices_are_rejected():
@@ -69,7 +78,15 @@ def test_invalid_choices_are_rejected():
                               "stt_language": "klingon"})
     assert controller.config.tts_backend == before
     assert controller.config.faster_whisper_model == "base"
-    assert controller.config.stt_language == "auto"
+    assert controller.config.stt_language == "en"
+
+
+def test_english_whisper_models_are_valid_choices():
+    _bridge, _window, controller = make_web_controller()
+    controller.save_settings({"faster_whisper_model": "small.en"})
+    assert controller.config.faster_whisper_model == "small.en"
+    controller.save_settings({"faster_whisper_model": "base.en"})
+    assert controller.config.faster_whisper_model == "base.en"
 
 
 def test_piper_selected_but_unconfigured_warns():

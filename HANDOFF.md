@@ -157,9 +157,9 @@ the form first, then runs async and reports back via `test_result` dispatch
 into a status line; friendly warning when tts_backend=piper but paths
 missing. 126 tests. Also added ARCHITECTURE.md + SKILL.md.
 
-## Phase 6 scope
+## Phase 6  DONE (2026-07-05)
 
-Run all tests; manual QA matrix (typed, voice, Ollama offline, Piper missing,
+Delivered: Run all tests; manual QA matrix (typed, voice, Ollama offline, Piper missing,
 wake word disabled, timeout recovery, confirm approve/deny/timeout); README
 rewrite (pywebview + WebView2 note, ollama pull llama3.2:3b, troubleshooting:
 slow first response → warm-up; Anna hears herself → half-duplex; @@@@ →

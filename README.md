@@ -45,10 +45,16 @@ Other lightweight options: `phi4-mini`, `gemma3:4b`, `qwen3:4b` (set in
 Settings). Thinking-mode models like qwen3 are slower for command planning;
 Anna disables thinking (`think: false`) either way.
 
+Chat uses a separate compact plain-text prompt. On slower CPUs you can run
+`ollama pull llama3.2:1b` and select it as the Chat model in Settings while
+keeping `llama3.2:3b` for structured command planning.
+
 ### 2. Speech-to-text
 
 Nothing to do — faster-whisper downloads the `base` model (~150 MB) on first
-use, then works offline. Model size and language: Settings → Voice input.
+use, then works offline. Anna uses English, beam search, VAD, and a vocabulary
+primer built from your configured apps/folders. If recognition is weak, try
+`small.en` in Settings → Voice input (slower but more accurate).
 
 ### 3. Anna's voice (TTS)
 
@@ -56,8 +62,13 @@ Works out of the box with the built-in Windows voice. For a much more
 natural voice, install **Piper**:
 
 1. Download Piper for Windows: https://github.com/rhasspy/piper/releases
-2. Download a voice, e.g. `en_US-amy-medium.onnx` (+ its `.json`)
-3. Settings → Voice output → set the piper.exe and .onnx paths → **Test voice**
+2. Download `en_US-hfc_female-medium.onnx` (or `en_US-amy-medium.onnx`)
+   plus its matching `.onnx.json`: https://huggingface.co/rhasspy/piper-voices
+3. Settings → Voice output → select both files → **Validate Piper**.
+
+Replies are synthesized sentence-by-sentence so speaking begins without
+waiting for the entire response. An optional Kokoro ONNX setup card is also
+available in Settings for a warmer voice (`af_heart` or `af_bella`).
 
 ### 4. Run
 

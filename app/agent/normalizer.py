@@ -38,10 +38,6 @@ TRAILING_FILLER = re.compile(
     r"(?:[\s,]+(?:please|for me|for us|now|right now|thanks|thank you|okay|ok))+[\s.!?]*$",
     re.IGNORECASE)
 
-# Verbs that signal "this was meant as a computer command".
-COMMAND_VERBS = ("open", "launch", "start", "close")
-
-
 @dataclass
 class NormalizedCommand:
     raw: str                                   # untouched input (devlog only)
@@ -87,14 +83,13 @@ def normalize_command(text: str, config) -> NormalizedCommand:
                              for s in re.split(r"(?<=[.?!])\s+", t)) if c]
     cleaned = _clean_sentence(t)
 
-    if cleaned.lower().strip(" .!?") in WHISPER_HALLUCINATIONS:
-        return NormalizedCommand(raw=raw, cleaned="", sentences=[])
     return NormalizedCommand(raw=raw, cleaned=cleaned, sentences=sentences)
 
 
 def looks_garbled(cleaned: str) -> bool:
-    """Heuristic for STT garble: starts like a command ("open ...") but the
-    router matched nothing — e.g. "open no pass for you". Voice input only;
-    the pipeline asks for clarification instead of calling the LLM."""
-    words = cleaned.lower().split()
-    return bool(words) and words[0] in COMMAND_VERBS
+    """Return true only for text too small to route meaningfully.
+
+    Fluent content is never judged as garble. Audio confidence is evaluated
+    by the command pipeline.
+    """
+    return len((cleaned or "").strip()) <= 1

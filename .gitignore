@@ -7,3 +7,4 @@ app/data/history.sqlite
 app/data/config.json
 app/data/memory.json
 *.wav
+app/data/voices/

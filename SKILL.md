@@ -21,11 +21,12 @@ or just stop talking; silence ends the recording).
 | open website &lt;domain&gt; | Opens the URL |
 | search downloads for invoice · find resume in documents | File-name search inside safe folders |
 
-## Natural language (local model, ~5–20 s)
+## Natural language (local model)
 
-Anything that doesn't match a rule goes to the local Ollama model, which
-returns a structured plan — e.g. "put a short hello note on my clipboard",
-"how are you feeling today", "run git status in my project". The model never
+Conversation uses a small plain-text personality prompt; commands use the
+full structured planner. Examples: "how are you feeling today", "put a short
+hello note on my clipboard", "run git status in my project". A chat response
+that detects a computer action hands back to command mode. The model never
 executes anything itself.
 
 ## Actions that ask for approval first
@@ -50,8 +51,9 @@ arbitrary code execution.
 - **Wake word** (optional, off by default): needs `pip install openwakeword`;
   uses the pre-trained "Hey Jarvis" model until a custom "Hey Anna" model is
   trained. Push-to-talk stays the primary path.
-- Garbled/misheard voice commands get a clarifying question instead of a
-  wrong guess; typing always wins over an in-flight recording.
+- Whisper confidence—not wording—decides whether audio needs a retry. Strong
+  fuzzy corrections run directly; uncertain ones show a neutral Yes/No card.
+  Typing always wins over an in-flight recording.
 
 ## Where things live
 

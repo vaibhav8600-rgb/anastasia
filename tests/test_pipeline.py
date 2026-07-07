@@ -12,6 +12,7 @@ from app.agent.router import match_rule
 from app.llm.intent_parser import ActionPlan
 from app.llm.ollama_client import OllamaError
 from app.tools import ToolResult
+from app.voice.stt_whisper import SpeechConfidence
 from tests.fakes import FakeAgent, FakeHistory, FakePipelineUI, FakeSpeech, make_config
 
 CFG = make_config()
@@ -88,7 +89,6 @@ def test_empty_stt_does_not_set_busy():
     pipeline, ui, _, agent = make_pipeline()
     pipeline.submit("", source="voice")
     pipeline.submit("   ", source="voice")
-    pipeline.submit("Thank you.", source="voice")  # whisper hallucination
     assert not pipeline.is_processing_command
     assert "thinking" not in ui.states
     assert not agent.executed
@@ -121,7 +121,9 @@ def test_typed_command_cancels_active_recording():
 def test_voice_garble_asks_clarification_instead_of_llm():
     agent = FakeAgent(CFG, rule=lambda t: match_rule(t, CFG))
     pipeline, ui, _, _ = make_pipeline(agent=agent)
-    pipeline.submit("open no pass for you", source="voice")
+    pipeline.submit("open no pass for you", source="voice",
+                    confidence=SpeechConfidence(avg_logprob=-1.4,
+                                                no_speech_prob=0.1))
     assert agent.llm_calls == 0
     assert GARBLE_MESSAGE in ui.annas
     assert not pipeline.is_processing_command

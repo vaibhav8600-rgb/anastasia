@@ -58,11 +58,17 @@ def run_doctor() -> int:
         ok &= _line(False, "Ollama not running — simple commands still work, "
                            "chat/reasoning needs it", warn=True)
 
-    from app.voice.tts_piper import piper_available
+    from app.voice.tts_piper import piper_available, validate_piper_config
     if piper_available(config):
-        _line(True, "Piper voice configured")
+        piper_ok, piper_message = validate_piper_config(config, play=False)
+        ok &= _line(piper_ok, piper_message, warn=not piper_ok)
     else:
         _line(False, "Piper not configured, using Windows fallback", warn=True)
+
+    if config.tts_backend == "kokoro":
+        from app.voice.tts_kokoro import validate_kokoro_config
+        kokoro_ok, kokoro_message = validate_kokoro_config(config, play=False)
+        ok &= _line(kokoro_ok, kokoro_message, warn=not kokoro_ok)
 
     if config.wake_word_enabled:
         try:

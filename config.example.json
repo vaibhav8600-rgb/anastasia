@@ -3,6 +3,7 @@
   "assistant_nickname": "Anna",
   "ollama_url": "http://localhost:11434",
   "ollama_model": "llama3.2:3b",
+  "chat_model": "",
   "ollama_timeout": 20,
   "ollama_keep_alive": "30m",
   "ollama_num_predict": 220,
@@ -11,8 +12,16 @@
   "voice_enabled": true,
   "wake_word_enabled": false,
   "push_to_talk_hotkey": "ctrl+alt+space",
+  "stt": {
+    "garble": {
+      "no_speech_prob": 0.6,
+      "avg_logprob": -1.0,
+      "compression_ratio": 2.4
+    }
+  },
   "stt_backend": "faster_whisper",
   "faster_whisper_model": "base",
+  "stt_language": "en",
   "whisper_cpp_exe": "",
   "whisper_cpp_model": "",
   "sample_rate": 16000,
@@ -23,6 +32,10 @@
   "tts_backend": "auto",
   "piper_exe": "",
   "piper_voice": "",
+  "piper_length_scale": 1.08,
+  "kokoro_model": "",
+  "kokoro_voices": "",
+  "kokoro_voice": "af_heart",
   "confirmation_mode": "strict",
   "max_type_text_no_confirm": 500,
   "animation_quality": "medium",

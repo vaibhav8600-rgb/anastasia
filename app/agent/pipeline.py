@@ -16,20 +16,38 @@ is fully testable without any GUI.
 
 import threading
 import time
+from dataclasses import dataclass
 from typing import Optional, Protocol
 
 from app.agent.devlog import CommandTrace, devlog
-from app.agent.normalizer import looks_garbled, normalize_command
+from app.agent.normalizer import normalize_command
+from app.agent.router import classify_input_mode, match_fuzzy_command
+from app.agent.responses import ROTATED_ACTION_INTENTS, warm_action_responses
 from app.agent.safety import validate_action
 from app.llm.ollama_client import OllamaError, OllamaModelMissing, OllamaNotRunning
+from app.voice.stt_whisper import SpeechConfidence
 
 BUSY_MESSAGE = "One moment — I'm finishing the last command."
 PENDING_MESSAGE = "I'm still waiting for your approval on the last one — Run it or Cancel first."
 EMPTY_MESSAGE = "I didn't catch that clearly. Try once more?"
-GARBLE_MESSAGE = "I heard something like a command but didn't recognize it — say it once more for me?"
+GARBLE_MESSAGE = "I heard something but didn't catch it — say it once more?"
+FUZZY_TIMEOUT_MESSAGE = "No worries — I let that suggestion go."
 TIMEOUT_MESSAGE = ("The local model is taking too long, so I skipped that one. "
                    "Simple commands still work instantly.")
 CONFIRM_TIMEOUT_MESSAGE = "That approval timed out, so I cancelled it to be safe."
+
+FUZZY_YES = {"yes", "yeah", "yep", "haan", "confirm", "go ahead", "do it"}
+FUZZY_NO = {"no", "nope", "cancel", "stop", "never mind", "nevermind"}
+
+
+@dataclass
+class PendingAction:
+    id: int
+    plan: object
+    safety: object
+    transcript: str
+    kind: str = "safety"
+    message: str = ""
 
 
 class PipelineUI(Protocol):
@@ -42,7 +60,8 @@ class PipelineUI(Protocol):
     def show_error(self, text: str) -> None: ...
     def show_info(self, text: str) -> None: ...
     def set_state(self, state: str, detail: str = "") -> None: ...
-    def ask_confirmation(self, action_id: int, transcript: str, plan, safety) -> None: ...
+    def ask_confirmation(self, action_id: int, transcript: str, plan, safety,
+                         kind: str = "safety", message: str = "") -> None: ...
     def hide_confirmation(self) -> None: ...
 
 
@@ -50,7 +69,8 @@ class CommandPipeline:
     def __init__(self, config, agent, history, ui: PipelineUI, speech,
                  cancel_recording=None, run_async: bool = True,
                  watchdog_seconds: float = 45.0,
-                 confirm_timeout_seconds: float = 30.0):
+                 confirm_timeout_seconds: float = 30.0,
+                 fuzzy_timeout_seconds: float = 15.0):
         self.config = config
         self.agent = agent
         self.history = history
@@ -60,9 +80,10 @@ class CommandPipeline:
         self.run_async = run_async
         self.watchdog_seconds = watchdog_seconds
         self.confirm_timeout_seconds = confirm_timeout_seconds
+        self.fuzzy_timeout_seconds = fuzzy_timeout_seconds
 
         self.is_processing_command = False
-        self.pending = None            # (action_id, plan, safety, transcript)
+        self.pending: Optional[PendingAction] = None
         self._action_counter = 0
         self._busy_lock = threading.Lock()
         self._pending_lock = threading.Lock()
@@ -71,7 +92,8 @@ class CommandPipeline:
         self._confirm_timer: Optional[threading.Timer] = None
 
     # ------------------------------------------------------------ entry
-    def submit(self, text: str, source: str = "typed") -> None:
+    def submit(self, text: str, source: str = "typed", confidence=None,
+               stt_ms: float = 0.0) -> None:
         """Entry point for every command, typed or voice. Returns fast;
         the actual work runs on a worker thread (unless run_async=False)."""
         if source == "typed" and self.cancel_recording:
@@ -81,8 +103,26 @@ class CommandPipeline:
             except Exception as e:
                 devlog.exception(e, context="cancel_recording")
 
+        if isinstance(confidence, dict):
+            confidence = SpeechConfidence(**confidence)
+        elif confidence is not None and not isinstance(confidence, SpeechConfidence):
+            confidence = SpeechConfidence(
+                avg_logprob=getattr(confidence, "avg_logprob", None),
+                no_speech_prob=getattr(confidence, "no_speech_prob", None),
+                compression_ratio=getattr(confidence, "compression_ratio", None))
+
+        voice_source = source in ("voice", "wake_word")
+        thresholds = self.config.stt.garble
+        if (voice_source and confidence is not None
+                and confidence.no_speech_prob is not None
+                and confidence.no_speech_prob > thresholds.no_speech_prob):
+            devlog.log(f"Silence/noise dropped (no_speech_prob="
+                       f"{confidence.no_speech_prob:.2f})")
+            self.ui.show_info(EMPTY_MESSAGE)
+            return
+
         norm = normalize_command(text, self.config)
-        if norm.empty:
+        if norm.empty or len(norm.cleaned) <= 1:
             # Empty/hallucinated input must never set the busy flag.
             devlog.log(f"Empty/hallucinated input dropped (source={source}, raw={text!r})")
             if (text or "").strip():
@@ -91,6 +131,14 @@ class CommandPipeline:
                 self.ui.show_info(EMPTY_MESSAGE)
             return
         if self.pending is not None:
+            if voice_source and self.pending.kind == "fuzzy":
+                answer = norm.cleaned.lower().strip(" .!?")
+                if answer in FUZZY_YES:
+                    self.approve_pending(action_id=self.pending.id)
+                    return
+                if answer in FUZZY_NO:
+                    self.cancel_pending(action_id=self.pending.id)
+                    return
             self.ui.show_info(PENDING_MESSAGE)
             return
         if self.is_processing_command:
@@ -98,13 +146,42 @@ class CommandPipeline:
             return
 
         if self.run_async:
-            threading.Thread(target=self._process, args=(norm, source),
+            threading.Thread(target=self._process,
+                             args=(norm, source, confidence, stt_ms),
                              daemon=True, name="anna-command").start()
         else:
-            self._process(norm, source)
+            self._process(norm, source, confidence, stt_ms)
+
+    def _low_confidence(self, source: str, confidence) -> bool:
+        if source not in ("voice", "wake_word") or confidence is None:
+            return False
+        thresholds = self.config.stt.garble
+        low_probability = (confidence.avg_logprob is not None
+                           and confidence.avg_logprob < thresholds.avg_logprob)
+        repetitive = (confidence.compression_ratio is not None
+                      and confidence.compression_ratio > thresholds.compression_ratio)
+        return low_probability or repetitive
+
+    def _start_chat_thinking(self):
+        stop = threading.Event()
+
+        def worker():
+            phrases = ("Thinking…", "One sec…")
+            if stop.wait(2.0):
+                return
+            index = 0
+            while not stop.is_set():
+                self.ui.set_state("thinking", phrases[index % len(phrases)])
+                index += 1
+                stop.wait(2.0)
+
+        threading.Thread(target=worker, daemon=True,
+                         name="anna-chat-status").start()
+        return stop
 
     # ---------------------------------------------------------- worker
-    def _process(self, norm, source: str) -> None:
+    def _process(self, norm, source: str, confidence=None,
+                 stt_ms: float = 0.0) -> None:
         with self._busy_lock:
             if self.is_processing_command:
                 self.ui.show_info(BUSY_MESSAGE)
@@ -113,36 +190,73 @@ class CommandPipeline:
         self._start_watchdog()
 
         trace = CommandTrace(source=source, raw=norm.raw, normalized=norm.cleaned)
+        trace.stt_ms = float(stt_ms or 0.0)
         started = time.perf_counter()
         transcript = norm.cleaned
+        chat_indicator = None
         try:
             self.ui.set_state("thinking")
 
             # 1) fast rule router — first sentence with a clear command wins
             t0 = time.perf_counter()
             plan = None
+            fuzzy = None
             for sentence in norm.sentences:
                 plan = self.agent.plan_rule(sentence)
                 if plan is not None:
                     transcript = sentence
                     break
+            if plan is None:
+                fuzzy = match_fuzzy_command(norm.cleaned, self.config)
+                if fuzzy is not None:
+                    plan = fuzzy.plan
             trace.routing_ms = (time.perf_counter() - t0) * 1000
             trace.normalized = transcript
             self.ui.show_user(transcript)
 
-            # 2) LLM only when no rule matched (and the input isn't STT garble)
-            if plan is not None:
+            # 2) exact rules, then fuzzy recovery, then confidence gate, then LLM
+            if plan is not None and fuzzy is None:
                 trace.route = "rule"
-            elif source in ("voice", "wake_word") and looks_garbled(norm.cleaned):
+            elif fuzzy is not None:
+                trace.route = "fuzzy_confirm" if fuzzy.needs_confirmation else "fuzzy"
+                devlog.log(f"Fuzzy correction: {fuzzy.heard_target!r} -> "
+                           f"{fuzzy.matched_target!r} ({fuzzy.score:.0f})")
+                if fuzzy.needs_confirmation:
+                    trace.intent = plan.intent
+                    trace.args = plan.arguments
+                    t0 = time.perf_counter()
+                    safety = validate_action(plan, self.config)
+                    trace.safety_ms = (time.perf_counter() - t0) * 1000
+                    if not safety.allowed:
+                        self._respond(f"I won't do that one. {safety.reason}",
+                                      transcript, None, trace)
+                        return
+                    message = f"Did you mean {fuzzy.matched_target}?"
+                    action_id = self._set_pending(plan, safety, transcript,
+                                                  kind="fuzzy", message=message)
+                    self.ui.set_state("waiting_clarification")
+                    self.ui.ask_confirmation(action_id, transcript, plan, safety,
+                                             kind="fuzzy", message=message)
+                    self.speech.speak_async(message)
+                    return
+            elif self._low_confidence(source, confidence):
                 trace.route = "garble"
-                devlog.warn(f"Probable STT garble, not sent to LLM: {norm.raw!r}")
+                devlog.warn(f"Low-confidence STT not sent to LLM: {norm.raw!r}")
                 self._respond(GARBLE_MESSAGE, transcript, None, trace)
                 return
             else:
-                trace.route = "llm"
                 trace.llm_used = True
                 t0 = time.perf_counter()
-                plan = self.agent.plan_llm(norm.cleaned)
+                mode = classify_input_mode(norm.cleaned, self.config)
+                if mode == "chat" and hasattr(self.agent, "plan_chat"):
+                    trace.route = "chat"
+                    chat_indicator = self._start_chat_thinking()
+                    plan, handed_off = self.agent.plan_chat(norm.cleaned)
+                    if handed_off:
+                        trace.route = "chat_handoff_command"
+                else:
+                    trace.route = "command_llm"
+                    plan = self.agent.plan_llm(norm.cleaned)
                 trace.llm_ms = (time.perf_counter() - t0) * 1000
 
             trace.intent = plan.intent
@@ -173,7 +287,8 @@ class CommandPipeline:
             if safety.requires_confirmation:
                 action_id = self._set_pending(plan, safety, transcript)
                 self.ui.set_state("waiting_confirmation")
-                self.ui.ask_confirmation(action_id, transcript, plan, safety)
+                self.ui.ask_confirmation(action_id, transcript, plan, safety,
+                                         kind="safety", message="")
                 warn = plan.confirmation_message or \
                     "This one needs your OK — check the screen for me?"
                 self.speech.speak_async(warn)
@@ -195,6 +310,8 @@ class CommandPipeline:
             self._fail(transcript, "Hmm, something went sideways on that one. "
                                    "I'm back and ready now.", trace)
         finally:
+            if chat_indicator is not None:
+                chat_indicator.set()
             self._stop_watchdog()
             self.is_processing_command = False
             trace.total_ms = (time.perf_counter() - started) * 1000
@@ -226,12 +343,19 @@ class CommandPipeline:
 
         msg = result.message or plan.assistant_message or "Done."
         if result.success:
+            if plan.intent in ROTATED_ACTION_INTENTS:
+                msg = warm_action_responses.next(plan)
             # Structured payload so the frontend can render a result card
             # (e.g. screenshot preview with View/Copy/Save).
             self.ui.show_result(msg, {"intent": plan.intent,
                                       "success": True,
                                       "data": result.data})
         else:
+            technical = ("\n" in msg or any(marker in msg.lower() for marker in
+                         ("exit code", "traceback", "exception", "winerror", "error:")))
+            if technical:
+                devlog.warn(f"Tool error hidden from conversation: {msg}")
+                msg = "Hmm, my local brain tripped on that one. Try me again?"
             self.ui.show_error(msg)
         self.history.log(transcript, plan, safety, executed=result.success,
                          result=result.message if result.success else "",
@@ -241,13 +365,17 @@ class CommandPipeline:
         trace.tts_ms = (time.perf_counter() - t0) * 1000
 
     # ----------------------------------------------------- confirmation
-    def _set_pending(self, plan, safety, transcript: str) -> int:
+    def _set_pending(self, plan, safety, transcript: str,
+                     kind: str = "safety", message: str = "") -> int:
         with self._pending_lock:
             self._action_counter += 1
             action_id = self._action_counter
-            self.pending = (action_id, plan, safety, transcript)
+            self.pending = PendingAction(action_id, plan, safety, transcript,
+                                         kind=kind, message=message)
+            timeout = (self.fuzzy_timeout_seconds if kind == "fuzzy"
+                       else self.confirm_timeout_seconds)
             self._confirm_timer = threading.Timer(
-                self.confirm_timeout_seconds,
+                timeout,
                 lambda: self.cancel_pending(reason="timeout", action_id=action_id))
             self._confirm_timer.daemon = True
             self._confirm_timer.start()
@@ -259,7 +387,7 @@ class CommandPipeline:
         with self._pending_lock:
             if self.pending is None:
                 return None
-            if action_id is not None and self.pending[0] != action_id:
+            if action_id is not None and self.pending.id != action_id:
                 return None
             pending, self.pending = self.pending, None
             if self._confirm_timer is not None:
@@ -272,18 +400,31 @@ class CommandPipeline:
         with self._pending_lock:
             if self.pending is None:
                 return None
-            action_id, plan, safety, transcript = self.pending
-            return {"id": action_id, "transcript": transcript,
-                    "tool": plan.tool_name, "arguments": plan.arguments,
-                    "risk": safety.risk_level,
-                    "message": plan.confirmation_message or safety.reason}
+            pending = self.pending
+            return {"id": pending.id, "transcript": pending.transcript,
+                    "tool": pending.plan.tool_name,
+                    "arguments": pending.plan.arguments,
+                    "risk": pending.safety.risk_level,
+                    "kind": pending.kind,
+                    "message": pending.message or pending.plan.confirmation_message
+                               or pending.safety.reason}
 
     def approve_pending(self, action_id=None) -> None:
         pending = self._take_pending(action_id)
         if not pending:
             return
-        _, plan, safety, transcript = pending
+        plan, safety, transcript = pending.plan, pending.safety, pending.transcript
         self.ui.hide_confirmation()
+
+        if pending.kind == "fuzzy" and safety.requires_confirmation:
+            next_id = self._set_pending(plan, safety, transcript)
+            self.ui.set_state("waiting_confirmation")
+            self.ui.ask_confirmation(next_id, transcript, plan, safety,
+                                     kind="safety", message="")
+            warn = plan.confirmation_message or \
+                "This one needs your OK — check the screen for me?"
+            self.speech.speak_async(warn)
+            return
 
         def worker():
             with self._busy_lock:
@@ -319,14 +460,19 @@ class CommandPipeline:
         pending = self._take_pending(action_id)
         if not pending:
             return
-        _, plan, safety, transcript = pending
+        plan, safety, transcript = pending.plan, pending.safety, pending.transcript
         self.ui.hide_confirmation()
         self.history.log(transcript, plan, safety, executed=False,
                          result=f"cancelled ({reason})")
         if reason == "timeout":
-            devlog.warn(f"Confirmation timed out after "
-                        f"{self.confirm_timeout_seconds:.0f}s: {transcript!r}")
-            self.ui.show_info(CONFIRM_TIMEOUT_MESSAGE)
+            timeout = (self.fuzzy_timeout_seconds if pending.kind == "fuzzy"
+                       else self.confirm_timeout_seconds)
+            devlog.warn(f"{pending.kind.title()} confirmation timed out after "
+                        f"{timeout:.0f}s: {transcript!r}")
+            self.ui.show_info(FUZZY_TIMEOUT_MESSAGE if pending.kind == "fuzzy"
+                              else CONFIRM_TIMEOUT_MESSAGE)
+        elif pending.kind == "fuzzy":
+            self.ui.show_info("No problem — I won't do that.")
         else:
             self.ui.show_info("Cancelled — nothing was executed.")
             self.speech.speak_async("Okay, cancelled.")

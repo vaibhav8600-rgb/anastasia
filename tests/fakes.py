@@ -28,6 +28,7 @@ class FakePipelineUI:
         self.results = []                 # (text, action) tuples
         self.states = []
         self.confirmations = []
+        self.confirmation_meta = []
         self.hidden = 0
 
     def show_user(self, text): self.users.append(text)
@@ -36,8 +37,10 @@ class FakePipelineUI:
     def show_error(self, text): self.errors.append(text)
     def show_info(self, text): self.infos.append(text)
     def set_state(self, state, detail=""): self.states.append(state)
-    def ask_confirmation(self, action_id, transcript, plan, safety):
+    def ask_confirmation(self, action_id, transcript, plan, safety,
+                         kind="safety", message=""):
         self.confirmations.append((action_id, transcript, plan, safety))
+        self.confirmation_meta.append((kind, message))
     def hide_confirmation(self): self.hidden += 1
 
     @property
@@ -88,7 +91,8 @@ class FakeAgent:
     """Configurable stand-in for router.Agent. Never runs real tools."""
 
     def __init__(self, config, rule=None, llm_plan=None, llm_exc=None,
-                 execute_result=None, execute_exc=None):
+                 execute_result=None, execute_exc=None,
+                 chat_plan=None, chat_handoff=False):
         self.config = config
         self.rule = rule                  # callable(text) -> ActionPlan|None
         self.llm_plan = llm_plan
@@ -97,6 +101,9 @@ class FakeAgent:
         self.execute_exc = execute_exc
         self.llm = ExplodingLLM()
         self.llm_calls = 0
+        self.chat_calls = 0
+        self.chat_plan = chat_plan
+        self.chat_handoff = chat_handoff
         self.executed = []
 
     def plan_rule(self, text):
@@ -108,6 +115,14 @@ class FakeAgent:
             raise self.llm_exc
         return self.llm_plan or ActionPlan(intent="no_action",
                                            assistant_message="Okay.")
+
+    def plan_chat(self, text):
+        self.chat_calls += 1
+        if self.llm_exc:
+            raise self.llm_exc
+        plan = self.chat_plan or self.llm_plan or ActionPlan(
+            intent="no_action", assistant_message="Chat reply.")
+        return plan, self.chat_handoff
 
     def execute(self, plan):
         self.executed.append(plan)

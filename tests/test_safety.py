@@ -123,6 +123,15 @@ def test_llm_confirmation_flag_never_downgraded():
     assert r.requires_confirmation
 
 
+def test_window_control_target_must_be_approved_alias():
+    allowed = validate_action(
+        plan("window_control", {"action": "close", "app": "chrome"}), cfg())
+    blocked = validate_action(
+        plan("window_control", {"action": "close", "app": "unknown"}), cfg())
+    assert allowed.allowed and allowed.requires_confirmation
+    assert not blocked.allowed
+
+
 def test_strict_mode_escalates_medium_risk():
     r = validate_action(plan("browser_open", {"url": "example.com"}, risk="medium"),
                         cfg(confirmation_mode="strict"))

@@ -144,6 +144,9 @@ def validate_action(plan, config) -> SafetyResult:
         reason = "File deletion is destructive (and disabled in the MVP)."
 
     elif tool == "window_control":
+        app = str(args.get("app") or "").lower().strip()
+        if app and app not in {key.lower() for key in config.app_aliases}:
+            return blocked(f"Window target '{app}' is not an approved app alias.")
         requires = True
         risk = _escalate(risk, "medium")
         reason = "Window control affects your active window."

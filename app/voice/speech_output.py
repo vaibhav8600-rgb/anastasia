@@ -15,7 +15,7 @@ import wave
 from pathlib import Path
 
 from app.agent.devlog import devlog
-from app.voice import _clean_for_speech, audio_gate
+from app.voice import audio_gate, split_sentences
 
 _STOP = object()
 
@@ -51,9 +51,8 @@ class SpeechOutput:
         """Queue text for speech and return immediately. Never raises."""
         if not text or not self.config.voice_enabled or self.config.tts_backend == "off":
             return
-        text = _clean_for_speech(text)
-        if text:
-            self._queue.put(text)
+        for sentence in split_sentences(text):
+            self._queue.put(sentence)
 
     def cancel(self) -> None:
         """Barge-in: stop current playback, drop queued speech, reopen mic."""
@@ -102,7 +101,7 @@ class SpeechOutput:
             except Exception as e:
                 devlog.exception(e, context="TTS")
             finally:
-                if not self._cancel.is_set():
+                if not self._cancel.is_set() and self._queue.empty():
                     # let room echo die before the mic reopens
                     self._cancel.wait(audio_gate.TAIL_SECONDS)
                 if self._queue.empty():
@@ -112,34 +111,60 @@ class SpeechOutput:
     # --------------------------------------------------------- backends
     def _speak(self, text: str) -> None:
         backend = self.config.tts_backend
-        if backend in ("auto", "piper") and self.config.piper_exe:
+        if backend == "auto":
+            from app.voice.tts_piper import piper_available
+            if piper_available(self.config):
+                try:
+                    self._speak_piper(text)
+                    return
+                except Exception as e:
+                    devlog.warn(f"Piper failed ({e}); falling back to Windows voice.")
+            self._speak_windows(text)
+            return
+        if backend == "piper":
+            from app.voice.tts_piper import piper_available
+            if not piper_available(self.config):
+                devlog.warn("Piper selected but setup is incomplete — staying silent.")
+                return
             try:
                 self._speak_piper(text)
                 return
             except Exception as e:
                 devlog.warn(f"Piper failed ({e}); falling back to Windows voice.")
-        if backend == "piper":
-            devlog.warn("Piper selected but not usable — staying silent.")
+                self._speak_windows(text)
+                return
+        if backend == "kokoro":
+            from app.voice.tts_kokoro import kokoro_available
+            if not kokoro_available(self.config):
+                devlog.warn("Kokoro selected but setup is incomplete — staying silent.")
+                return
+            try:
+                self._speak_kokoro(text)
+            except Exception as e:
+                devlog.warn(f"Kokoro failed ({e}); check Voice settings.")
             return
         self._speak_windows(text)
 
     def _speak_piper(self, text: str) -> None:
-        from app.voice.tts_piper import piper_available
-        if not piper_available(self.config):
-            raise FileNotFoundError("Piper exe or voice model not found.")
+        from app.voice.tts_piper import synthesize_piper
         import tempfile
-        wav_path = Path(tempfile.gettempdir()) / "anna_tts.wav"
-        creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        args = [str(self.config.piper_exe), "--model", str(self.config.piper_voice),
-                "--output_file", str(wav_path)]
-        rate = getattr(self.config, "tts_rate", 1.0)
-        if rate and rate != 1.0:
-            args += ["--length_scale", str(piper_length_scale(rate))]
-        proc = subprocess.run(
-            args, input=text.encode("utf-8"), capture_output=True,
-            timeout=60, creationflags=creation)
-        if proc.returncode != 0 or not wav_path.exists():
-            raise RuntimeError(f"Piper failed: {(proc.stderr or b'')[:200]!r}")
+        wav_path = Path(tempfile.gettempdir()) / \
+            f"anna_piper_{threading.get_ident()}.wav"
+        synthesize_piper(text, self.config, wav_path)
+        if self._cancel.is_set():
+            wav_path.unlink(missing_ok=True)
+            return
+        try:
+            self._play_wav_cancellable(wav_path)
+        finally:
+            wav_path.unlink(missing_ok=True)
+
+    def _speak_kokoro(self, text: str) -> None:
+        from app.voice.tts_kokoro import synthesize_kokoro
+        import tempfile
+        wav_path = Path(tempfile.gettempdir()) / \
+            f"anna_kokoro_{threading.get_ident()}.wav"
+        synthesize_kokoro(text, self.config, wav_path)
         if self._cancel.is_set():
             wav_path.unlink(missing_ok=True)
             return

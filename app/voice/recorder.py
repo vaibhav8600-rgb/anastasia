@@ -21,6 +21,7 @@ class Recorder:
         self._silence_start = None
         self._start_time = 0.0
         self._on_auto_stop = None
+        self._device_logged = False
 
     @property
     def recording(self) -> bool:
@@ -50,6 +51,17 @@ class Recorder:
             self._stream = None
             raise MicrophoneError(f"Could not open the microphone: {e}") from e
         self._recording = True
+        if not self._device_logged:
+            try:
+                from app.agent.devlog import devlog
+                device = sd.query_devices(kind="input")
+                name = str(device.get("name", "Default microphone"))
+                default_rate = int(float(device.get("default_samplerate", 0) or 0))
+                devlog.log(f"Microphone input: {name} | capture: "
+                           f"{self.config.sample_rate}Hz mono | device: {default_rate}Hz")
+                self._device_logged = True
+            except Exception:
+                pass
 
     def _callback(self, indata, frames, time_info, status) -> None:
         if not self._recording:
@@ -99,12 +111,31 @@ class Recorder:
         self.stop()
         self._frames = []
 
-    def save_wav(self, data, path: Path) -> None:
+    def save_wav(self, data, path: Path, sample_rate: int = None) -> None:
         with wave.open(str(path), "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(2)
-            wf.setframerate(self.config.sample_rate)
+            wf.setframerate(sample_rate or self.config.sample_rate)
             wf.writeframes(data.tobytes())
+
+
+def normalize_audio_for_stt(data, source_rate: int, target_rate: int = 16000):
+    """Return int16 mono audio resampled to Whisper's preferred rate."""
+    import numpy as np
+
+    audio = np.asarray(data)
+    if audio.ndim > 1:
+        audio = audio.astype(np.float32).mean(axis=1)
+    else:
+        audio = audio.astype(np.float32)
+    if not len(audio):
+        return np.asarray([], dtype=np.int16)
+    if source_rate != target_rate:
+        output_length = max(1, round(len(audio) * target_rate / source_rate))
+        old_positions = np.linspace(0.0, 1.0, len(audio), endpoint=False)
+        new_positions = np.linspace(0.0, 1.0, output_length, endpoint=False)
+        audio = np.interp(new_positions, old_positions, audio)
+    return np.clip(audio, -32768, 32767).astype(np.int16)
 
 
 def microphone_available() -> bool:

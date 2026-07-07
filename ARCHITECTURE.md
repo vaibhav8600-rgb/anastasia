@@ -7,15 +7,21 @@ No cloud calls anywhere at runtime.
 ## Big picture
 
 ```
- mic ──► Recorder ──► faster-whisper STT ─┐            keyboard hotkey ─┐
+ mic ──► Recorder ──► faster-whisper text + confidence ─┐ keyboard hotkey ─┐
                                           ▼                             ▼
  typed text ──────────────────────► CommandPipeline ◄────────── Controller
                                           │
-              normalize (wake words, STT fixes, sentence split, garble)
+              silence/noise confidence gate → normalize + sentence split
                                           │
                     fast rule router ─── match? ──► ActionPlan
                                           │ no
-                    Ollama (llama3.2:3b, think:false, JSON) ──► ActionPlan
+                    fuzzy target recovery ─ match? ─► ActionPlan/confirm (15s)
+                                          │ no
+                    low audio confidence? ──────────► polite retry
+                                          │ no
+                    local chat/command classifier
+                         ├─ chat: slim plain-text prompt ──► reply
+                         └─ command: full JSON prompt ─────► ActionPlan
                                           │
                               safety validator (whitelist)
                                           │
@@ -34,17 +40,19 @@ No cloud calls anywhere at runtime.
 |---|---|
 | `app/main.py` | `Controller` (wiring, health checks/chips, toggles, settings, PTT, full_state) + `main()` webview bootstrap |
 | `app/agent/pipeline.py` | `CommandPipeline` — the only path a command flows through; busy flag with `finally` + 45s watchdog; confirmation ids + auto-cancel |
-| `app/agent/normalizer.py` | transcript cleanup, multi-sentence split, Whisper-hallucination and garble detection |
-| `app/agent/router.py` | `match_rule` (instant, never LLM) + `Agent.plan_rule/plan_llm/execute` |
+| `app/agent/normalizer.py` | transcript cleanup, STT fixes, wake-word removal, multi-sentence split |
+| `app/agent/router.py` | exact/pattern rules, RapidFuzz target recovery, `Agent.plan_rule/plan_llm/execute` |
 | `app/agent/safety.py` | policy: whitelist, blocked tools, dangerous-terminal patterns, safe folders (NEVER weaken) |
 | `app/agent/conversation.py` | structured chat log (role/text/ts/action), `snapshot()` for re-hydration |
 | `app/agent/devlog.py` | ring-buffer developer log + per-command `CommandTrace` timings |
 | `app/llm/ollama_client.py` | `/api/chat` with think:false, keep_alive, num_predict, num_ctx, num_gpu; `warm_up(messages)`; latency/tokens-per-s stats |
-| `app/llm/prompt_builder.py` | compact (<800 tok) intent prompt; persona + summarize prompts |
+| `app/llm/prompt_builder.py` | full command prompt plus <250-token chat prompt and safe memory lines |
 | `app/llm/intent_parser.py` | `<think>` stripping, balanced-JSON extraction, `ActionPlan` validation |
 | `app/tools/*` | whitelisted executors (`@tool` registry); nothing model-generated ever executes |
 | `app/voice/recorder.py` | mic capture, silence auto-stop, drops frames while TTS gate is set |
-| `app/voice/speech_output.py` | queued async cancellable TTS (Piper → SAPI fallback), sets the gate |
+| `app/voice/stt_whisper.py` | beam/VAD transcription, live vocabulary primer, `stt_ms`, and aggregate confidence signals |
+| `app/voice/speech_output.py` | sentence-streamed, sanitized, cancellable TTS (Piper/Kokoro/SAPI), sets the gate |
+| `app/voice/tts_piper.py` / `tts_kokoro.py` | backend setup checks, real synthesis validation, and local WAV generation |
 | `app/voice/audio_gate.py` | global `speaking` Event + 400ms tail (half-duplex echo fix) |
 | `app/voice/wake_word.py` | optional openWakeWord listener, gate-aware, lazy-imported only when enabled |
 | `app/web/bridge.py` | `UIBridge` (Python→JS events, pre-ready buffering) + `JsApi` (JS→Python) |
@@ -85,16 +93,21 @@ only) · `clear_history` · `recheck` · `ready` · `test_voice` ·
    dangerous terminal patterns are blocked even with confirmation.
 4. Deletion/shutdown/email/credentials: refused outright (MVP).
 5. The frontend renders events; it can only call the closed `JsApi` surface.
-6. Confirmations expire after 30s and are keyed by action id.
+6. Safety confirmations expire after 30s; neutral fuzzy corrections after
+   15s. Both are keyed by action id.
 
 ## Performance design
 
 - Rule router first — simple commands never touch Ollama (~0–3ms routing).
+- Conversational input skips JSON/tool schema processing; an exact handoff
+  marker safely re-enters command mode. Ambiguous input prefers command mode.
 - Ollama: model pinned warm (`keep_alive`), no thinking tokens, bounded
   generation, small ctx, CPU-only on this machine (`num_gpu: 0` — iGPU
   offload corrupts llama3.2 output), warm-up request carries the real system
   prompt so the prompt cache absorbs the one-time CPU prefill.
 - Heavy imports (PIL/pyautogui/pyperclip) preloaded at startup.
+- Microphone input is normalized to 16 kHz mono before Whisper; device/rate
+  and one-time low-gain diagnostics stay in the developer channel.
 - Animations are CSS transform/opacity only, tiered by
   `animation_quality`; canvases pause when the window is hidden.
 ```

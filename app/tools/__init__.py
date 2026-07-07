@@ -53,4 +53,6 @@ def run_tool(name: str, arguments: Optional[dict], ctx: ToolContext) -> ToolResu
     try:
         return fn(arguments or {}, ctx)
     except Exception as e:  # tools must never crash the app
-        return ToolResult(False, f"That didn't work — {type(e).__name__}: {e}")
+        from app.agent.devlog import devlog
+        devlog.exception(e, context=f"tool:{name}")
+        return ToolResult(False, "Hmm, my local brain tripped on that one. Try me again?")

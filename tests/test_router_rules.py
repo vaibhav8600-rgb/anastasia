@@ -116,13 +116,15 @@ def test_normalize_splits_multi_sentence_stt():
     assert match_rule(n.sentences[0], CFG).arguments["app_name"] == "paint"
 
 
-def test_whisper_hallucinations_treated_as_empty():
-    for phrase in ("Thank you.", "thanks for watching", "you", ""):
-        assert normalize_command(phrase, CFG).empty, phrase
+def test_whisper_artifacts_preserved_until_audio_confidence_gate():
+    for phrase in ("Thank you.", "thanks for watching", "you"):
+        assert not normalize_command(phrase, CFG).empty, phrase
+    assert normalize_command("", CFG).empty
 
 
 def test_garble_detection():
-    assert looks_garbled("open no pass for you")
+    assert looks_garbled("x")
+    assert not looks_garbled("open no pass for you")
     assert not looks_garbled("what's the weather like")
 
 

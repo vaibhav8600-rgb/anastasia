@@ -59,9 +59,11 @@ class OllamaClient:
 
     # ------------------------------------------------------------------
     def _build_payload(self, messages: list, json_format: bool,
-                       temperature: float, num_predict: int = None) -> dict:
+                       temperature: float, num_predict: int = None,
+                       model: str = None) -> dict:
+        selected_model = model or self.config.ollama_model
         payload = {
-            "model": self.config.ollama_model,
+            "model": selected_model,
             "messages": messages,
             "stream": False,
             "think": False,
@@ -79,9 +81,12 @@ class OllamaClient:
         return payload
 
     def chat(self, messages: list, json_format: bool = True,
-             temperature: float = 0.1, num_predict: int = None) -> str:
+             temperature: float = 0.1, num_predict: int = None,
+             model: str = None) -> str:
         """Send a chat request; returns the assistant message content."""
-        payload = self._build_payload(messages, json_format, temperature, num_predict)
+        selected_model = model or self.config.ollama_model
+        payload = self._build_payload(messages, json_format, temperature,
+                                      num_predict, selected_model)
         started = time.perf_counter()
         try:
             r = requests.post(f"{self.base_url}/api/chat", json=payload,
@@ -95,8 +100,8 @@ class OllamaClient:
 
         if r.status_code == 404 or (r.status_code >= 400 and "not found" in r.text.lower()):
             raise OllamaModelMissing(
-                f"Model '{self.config.ollama_model}' is not installed. "
-                f"Run: ollama pull {self.config.ollama_model}")
+                f"Model '{selected_model}' is not installed. "
+                f"Run: ollama pull {selected_model}")
         try:
             r.raise_for_status()
         except requests.HTTPError as e:
@@ -105,20 +110,20 @@ class OllamaClient:
         body = r.json()
         self._record_latency(body, (time.perf_counter() - started) * 1000)
         content = body.get("message", {}).get("content", "")
-        if "qwen" in self.config.ollama_model.lower():
+        if "qwen" in selected_model.lower():
             # Defensive: qwen-family models may still emit <think> blocks.
             from app.llm.intent_parser import strip_thinking
             content = strip_thinking(content)
         return content
 
-    def warm_up(self, messages: list = None) -> float | None:
+    def warm_up(self, messages: list = None, model: str = None) -> float | None:
         """Preload the model with a tiny 1-token request. Pass the real
         intent messages so the system prompt lands in Ollama's prompt cache —
         that's what makes the FIRST real command fast (CPU prefill of the
         system prompt costs tens of seconds otherwise). Returns ms or None."""
         payload = self._build_payload(
             messages or [{"role": "user", "content": "hi"}],
-            json_format=False, temperature=0.0, num_predict=1)
+            json_format=False, temperature=0.0, num_predict=1, model=model)
         started = time.perf_counter()
         try:
             r = requests.post(f"{self.base_url}/api/chat", json=payload,

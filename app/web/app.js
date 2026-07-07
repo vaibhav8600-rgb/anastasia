@@ -35,6 +35,7 @@ const STATES = {
   executing:            { word: "Working", sub: "On it.", card: "Working" },
   speaking:             { word: "Speaking", sub: "…", card: "Speaking" },
   waiting_confirmation: { word: "Waiting for approval", sub: "Check the conversation panel.", card: "Waiting", tone: "warn" },
+  waiting_clarification:{ word: "Quick check", sub: "Did I hear you right?", card: "Waiting" },
   error:                { word: "Hmm.", sub: "Something went wrong — I'm still here.", card: "Ready 💙", tone: "error" },
 };
 const LIVE_STATES = new Set(["listening", "speaking"]);
@@ -95,6 +96,14 @@ function renderEntry(p, role) {
 
 function confirmCardHtml(p) {
   const args = JSON.stringify(p.arguments || {});
+  if (p.kind === "fuzzy") return `<div class="confirm-card fuzzy" data-confirm-id="${esc(p.id)}">
+            <h4>Quick check</h4>
+            <div class="confirm-msg">${esc(p.message || "Did I hear you right?")}</div>
+            <div class="confirm-actions">
+              <button class="ghost-btn approve" data-confirm="${esc(p.id)}" data-approved="1">Yes</button>
+              <button class="ghost-btn" data-confirm="${esc(p.id)}" data-approved="0">No</button>
+            </div>
+          </div>`;
   return `<div class="confirm-card" data-confirm-id="${esc(p.id)}">
             <h4>⚠ Approval required <span class="dim">· risk: ${esc(p.risk || "?")}</span></h4>
             <code>${esc(p.tool)} ${esc(args)}</code>
@@ -219,14 +228,14 @@ function startHalo() {
 }
 
 /* ---------------------------------------------------------------- state */
-function setState(state) {
+function setState(state, detail = "") {
   currentState = state;
   const meta = STATES[state] || STATES.ready;
   $("#core").dataset.state = state;
   const word = $("#state-word");
   word.textContent = meta.word;
   word.dataset.tone = meta.tone || "";
-  $("#state-sub").textContent = meta.sub;
+  $("#state-sub").textContent = detail || meta.sub;
   $("#state-sub").classList.toggle("ellipsis",
     state === "thinking" || state === "transcribing");
   $("#status-word").innerHTML = meta.card === "Ready 💙"
@@ -285,6 +294,11 @@ function settingsHtml(s) {
       <input id="set-ollama_url" value="${esc(s.ollama_url || "")}"></div>
     <div class="form-row"><label>Model name</label>
       <input id="set-ollama_model" value="${esc(s.ollama_model || "")}"></div>
+    <div class="form-row"><label>Chat model</label>
+      <input id="set-chat_model" value="${esc(s.chat_model || s.ollama_model || "")}"></div>
+    <p class="settings-hint">For faster chat on slower CPUs, run
+      <code>ollama pull llama3.2:1b</code> and use <code>llama3.2:1b</code> here.
+      Command planning stays on the main model.</p>
     <div class="form-row"><label>Model timeout (seconds)</label>
       <input id="set-ollama_timeout" type="number" min="5" max="120"
              value="${esc(s.ollama_timeout || 20)}"></div>
@@ -292,7 +306,9 @@ function settingsHtml(s) {
 
     <h4 class="settings-section">Voice input (microphone &amp; speech-to-text)</h4>
     <div class="form-row"><label>Whisper model (bigger = slower, more accurate)</label>
-      ${selectHtml("faster_whisper_model", s.faster_whisper_model, ["tiny", "base", "small"])}</div>
+      ${selectHtml("faster_whisper_model", s.faster_whisper_model,
+        ["tiny", "base", "base.en", "small", "small.en"])}</div>
+    <p class="settings-hint">If Anna often mishears you, try small.en (slower but more accurate).</p>
     <div class="form-row"><label>Language</label>
       ${selectHtml("stt_language", s.stt_language, ["auto", "en", "hi", "mr"])}</div>
     <div class="form-row"><label>Silence timeout (seconds of quiet that ends a recording)</label>
@@ -305,14 +321,46 @@ function settingsHtml(s) {
 
     <h4 class="settings-section">Voice output (Anna's voice)</h4>
     <div class="form-row"><label>Voice engine</label>
-      ${selectHtml("tts_backend", s.tts_backend, ["auto", "piper", "windows", "off"])}</div>
-    <div class="form-row"><label>Piper executable path (piper.exe)</label>
-      <input id="set-piper_exe" value="${esc(s.piper_exe || "")}"
-             placeholder="C:\\tools\\piper\\piper.exe"></div>
-    <div class="form-row"><label>Piper voice model path (.onnx)</label>
-      <input id="set-piper_voice" value="${esc(s.piper_voice || "")}"
-             placeholder="C:\\tools\\piper\\en_US-amy-medium.onnx"></div>
-    <div class="form-row"><label>Voice speed (0.5 slow — 2.0 fast)</label>
+      ${selectHtml("tts_backend", s.tts_backend,
+        ["auto", "piper", "kokoro", "windows", "off"])}</div>
+
+    <div class="voice-setup-card">
+      <h5>Set up Piper</h5>
+      <ol><li>Download <b>piper_windows_amd64.zip</b> from
+        <a href="https://github.com/rhasspy/piper/releases" target="_blank">Piper releases</a>
+        and extract it (suggested: <code>C:\\tools\\piper\\</code>).</li>
+      <li>Download a voice <code>.onnx</code> and matching <code>.onnx.json</code> from
+        <a href="https://huggingface.co/rhasspy/piper-voices" target="_blank">Piper voices</a>.
+        Try <b>en_US-hfc_female-medium</b>, or <b>en_US-amy-medium</b>.</li></ol>
+      <div class="form-row"><label>Piper executable</label><div class="file-row">
+        <input id="set-piper_exe" value="${esc(s.piper_exe || "")}" placeholder="C:\\tools\\piper\\piper.exe">
+        <button class="ghost-btn pick-voice-file" data-pick="piper_exe">Browse</button></div></div>
+      <div class="form-row"><label>Piper voice model (.onnx; matching JSON auto-detected)</label><div class="file-row">
+        <input id="set-piper_voice" value="${esc(s.piper_voice || "")}" placeholder="en_US-hfc_female-medium.onnx">
+        <button class="ghost-btn pick-voice-file" data-pick="piper_voice">Browse</button></div></div>
+      <div class="form-row"><label>Voice speed / Piper length scale (1.08 = relaxed)</label>
+        <input id="set-piper_length_scale" type="number" step="0.01" min="0.5" max="2"
+               value="${esc(s.piper_length_scale || 1.08)}"></div>
+      <button class="ghost-btn" id="validate-piper">Validate Piper</button>
+    </div>
+
+    <div class="voice-setup-card">
+      <h5>Optional: set up Kokoro</h5>
+      <p>Install <code>kokoro-onnx</code>, then download
+        <a href="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx" target="_blank">kokoro-v1.0.onnx</a>
+        and <a href="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin" target="_blank">voices-v1.0.bin</a>.</p>
+      <div class="form-row"><label>Kokoro model</label><div class="file-row">
+        <input id="set-kokoro_model" value="${esc(s.kokoro_model || "")}" placeholder="kokoro-v1.0.onnx">
+        <button class="ghost-btn pick-voice-file" data-pick="kokoro_model">Browse</button></div></div>
+      <div class="form-row"><label>Kokoro voices</label><div class="file-row">
+        <input id="set-kokoro_voices" value="${esc(s.kokoro_voices || "")}" placeholder="voices-v1.0.bin">
+        <button class="ghost-btn pick-voice-file" data-pick="kokoro_voices">Browse</button></div></div>
+      <div class="form-row"><label>Warm female voice</label>
+        ${selectHtml("kokoro_voice", s.kokoro_voice || "af_heart", ["af_heart", "af_bella"])}</div>
+      <button class="ghost-btn" id="validate-kokoro">Validate Kokoro</button>
+    </div>
+
+    <div class="form-row"><label>General voice speed (0.5 slow — 2.0 fast)</label>
       <input id="set-tts_rate" type="number" step="0.1" min="0.5" max="2"
              value="${esc(s.tts_rate)}"></div>
     <div class="form-row"><label>Volume (0–100, Windows voice only)</label>
@@ -333,6 +381,7 @@ function collectSettings() {
     animation_quality: val("animation_quality"),
     ollama_url: val("ollama_url"),
     ollama_model: val("ollama_model"),
+    chat_model: val("chat_model"),
     ollama_timeout: parseInt(val("ollama_timeout"), 10) || 20,
     faster_whisper_model: val("faster_whisper_model"),
     stt_language: val("stt_language"),
@@ -341,6 +390,10 @@ function collectSettings() {
     tts_backend: val("tts_backend"),
     piper_exe: val("piper_exe"),
     piper_voice: val("piper_voice"),
+    piper_length_scale: parseFloat(val("piper_length_scale")) || 1.08,
+    kokoro_model: val("kokoro_model"),
+    kokoro_voices: val("kokoro_voices"),
+    kokoro_voice: val("kokoro_voice"),
     tts_rate: parseFloat(val("tts_rate")) || 1.0,
     tts_volume: parseInt(val("tts_volume"), 10),
   };
@@ -348,7 +401,7 @@ function collectSettings() {
 
 /* ------------------------------------------------------- event handlers */
 const handlers = {
-  state_change: (p) => setState(p.state),
+  state_change: (p) => setState(p.state, p.detail || ""),
   status: (p) => setChips(p.chips),
   user_message: (p) => renderEntry(p, "user"),
   anna_message: (p) => renderEntry(p, "anna"),
@@ -399,6 +452,21 @@ const handlers = {
     });
     $("#test-voice").addEventListener("click", () => {
       call("save_settings", collectSettings()).then(() => call("test_voice"));
+    });
+    document.querySelectorAll(".pick-voice-file").forEach(button => {
+      button.addEventListener("click", () => {
+        const kind = button.dataset.pick;
+        call("pick_voice_file", kind).then(path => {
+          const input = $("#set-" + kind);
+          if (input && path) input.value = path;
+        });
+      });
+    });
+    $("#validate-piper").addEventListener("click", () => {
+      call("save_settings", collectSettings()).then(() => call("validate_piper"));
+    });
+    $("#validate-kokoro").addEventListener("click", () => {
+      call("save_settings", collectSettings()).then(() => call("validate_kokoro"));
     });
   },
 
