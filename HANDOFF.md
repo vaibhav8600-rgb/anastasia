@@ -1,5 +1,21 @@
 # HANDOFF — Anastasia (Anna) overhaul
 
+> **Phase 9.1A + 9.1B DONE.** 9.1A: SQLite crash on confirmed actions fixed —
+> history.py now per-call connections (WAL + busy_timeout=30000), log/recent/
+> clear never raise; pipeline reports success from result.success then logs
+> best-effort via _safe_log (execution/logging decoupled). 9.1B: root cause
+> was websocket-client in requirements but NOT installed (now installed +
+> verified socket connects/auths with the real key). STTRouter.websocket_
+> available() + streaming_status()->(state,reason); use_streaming() now
+> requires the dep so no silent per-turn fallback. Honest amber STT chip
+> ("STT: Local (streaming unavailable)") shown only when stt_mode=streaming;
+> warn ONCE per session (_streaming_warned); capability summary line at
+> startup ("Capabilities — STT: ... | brain: ... | TTS: ..."); turn_latency
+> breakdown uses REAL labeled stt (stt(deepgram)~N / stt(local)~N), never the
+> old ~300 estimate. Settings shows streaming status+reason. 252 tests.
+> Next: 9.1C Deepgram Aura TTS, 9.1D screenshot thumbnails.
+
+
 > **Phase 9 COMPLETE (9A-9D). 238 tests passing.** 9D: turn_latency_ms
 > consolidated telemetry — controller._start_turn_clock(stt_ms) sets _turn_t0
 > before every VOICE pipeline.submit (both _on_stt_final streaming +

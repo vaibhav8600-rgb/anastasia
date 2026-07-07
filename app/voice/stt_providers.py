@@ -221,8 +221,32 @@ class STTRouter:
         return "closed" if not self.circuit_open() \
             else f"open ({self._open_until - time.monotonic():.0f}s left)"
 
+    @staticmethod
+    def websocket_available() -> bool:
+        import importlib.util
+        return importlib.util.find_spec("websocket") is not None
+
     def use_streaming(self) -> bool:
-        return self.mode() == "streaming" and not self.circuit_open()
+        # Only claim streaming when it can ACTUALLY run — mode on, key present,
+        # the websocket-client dependency installed, circuit closed. This is
+        # what stops the silent per-turn 'No module named websocket' fallback.
+        return (self.mode() == "streaming" and self.websocket_available()
+                and not self.circuit_open())
+
+    def streaming_status(self) -> tuple[str, str]:
+        """(state, reason) for the honest STT chip. state is one of:
+        'streaming' | 'unavailable' | 'degraded' | 'local'."""
+        if getattr(self.config, "stt_mode", "local") != "streaming":
+            return "local", "Streaming off — all audio stays on this PC."
+        if not deepgram_key(self.config):
+            return "unavailable", "Add a Deepgram API key in Settings → Voice input."
+        if not self.websocket_available():
+            return "unavailable", ("The streaming library is missing — run "
+                                   "pip install websocket-client, then restart.")
+        if self.circuit_open():
+            return "degraded", ("Deepgram had errors — using local Whisper for "
+                                f"{self._open_until - time.monotonic():.0f}s.")
+        return "streaming", "Streaming speech via Deepgram is active."
 
     def _notify(self) -> None:
         if self.on_state_change:

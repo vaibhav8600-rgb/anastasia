@@ -69,6 +69,8 @@ class Controller:
         self._idle_timer = None
         self._turn_t0 = None               # turn_latency_ms anchor (9D)
         self._last_turn_stt_ms = 0.0
+        self._last_turn_stt_provider = "local"   # real STT path for telemetry
+        self._streaming_warned = False           # warn once per session (9.1B)
 
         if ui is None:
             raise ValueError("Controller requires a ui (UIBridge or test fake).")
@@ -367,7 +369,26 @@ class Controller:
         from app.voice.tts_kokoro import kokoro_available
         self._kokoro_ok = kokoro_available(self.config)
 
+        # Honest STT status: one clear warning if the user chose streaming but
+        # it can't run, plus a persistent amber chip (never a per-turn warning).
+        stt_state, stt_reason = self.stt_router.streaming_status()
+        if stt_state in ("unavailable", "degraded") and not self._streaming_warned:
+            self._streaming_warned = True
+            devlog.warn(f"Streaming STT not active: {stt_reason}")
+            issues.append(f"Streaming speech isn't running — {stt_reason} "
+                          "Anna is using local Whisper meanwhile.")
+
         self._push_chips(model_state)
+
+        # One-line capability summary so the active paths are unambiguous.
+        stt_cap = ("streaming (deepgram)" if stt_state == "streaming"
+                   else f"local whisper ({self.config.faster_whisper_model})")
+        brain_cap = (f"groq+ollama" if self.agent.brain.mode() == "hybrid"
+                     else "ollama (local)")
+        tts_cap = self.config.tts_backend
+        devlog.log(f"Capabilities — STT: {stt_cap} | brain: {brain_cap} | "
+                   f"TTS: {tts_cap}")
+
         if issues:
             self._ui(self.ui.show_setup_card, issues, self._on_recheck)
         else:
@@ -386,9 +407,12 @@ class Controller:
             self._turn_t0 = None
             brain = getattr(self.agent, "brain", None)
             first_tok = getattr(getattr(brain, "last", None), "first_token_ms", 0) or 0
+            # REAL measured stt_ms, labeled by the provider that actually ran —
+            # never an aspirational estimate (9.1B).
             stt = self._last_turn_stt_ms
+            stt_label = "deepgram" if self._last_turn_stt_provider == "deepgram" else "local"
             devlog.log(f"turn_latency_ms: {turn_ms:.0f}ms  "
-                       f"(stt_final~{stt:.0f} + route+llm_first_token~{first_tok:.0f} "
+                       f"(stt({stt_label})~{stt:.0f} + route+llm_first_token~{first_tok:.0f} "
                        f"+ tts_first_audio~{ms:.0f})")
             if hasattr(self.ui, "dispatch"):
                 self.ui.dispatch("turn_latency", {"ms": round(turn_ms)})
@@ -450,6 +474,17 @@ class Controller:
                     "state": "ok" if getattr(self, "_mic_ok", True) else "bad"},
             "voice": {"label": voice_label, "state": voice_state},
         }
+        # Honest STT chip: only shown when the user opted into streaming, so
+        # they can see at a glance whether it's actually running (9.1B).
+        stt_state, _reason = self.stt_router.streaming_status()
+        if stt_state == "streaming":
+            self.chips["stt"] = {"label": "STT: Streaming (Deepgram)", "state": "ok"}
+        elif stt_state == "degraded":
+            self.chips["stt"] = {"label": "STT: Local (Deepgram error)", "state": "warn"}
+        elif stt_state == "unavailable":
+            self.chips["stt"] = {"label": "STT: Local (streaming unavailable)",
+                                 "state": "warn"}
+        # stt_state == "local" (streaming off): no chip, mic chip covers it
         if hasattr(self.ui, "dispatch"):
             self.ui.dispatch("status", {"chips": self.chips})
 
@@ -606,14 +641,16 @@ class Controller:
             self.show_info("I didn't catch that clearly. Try once more?")
             self.set_state("ready")
             return
-        self._start_turn_clock(result.stt_ms)
+        self._start_turn_clock(result.stt_ms, provider=result.provider or "deepgram")
         self.pipeline.submit(result.text, source=self._record_source,
                              confidence=result.confidence, stt_ms=result.stt_ms)
 
-    def _start_turn_clock(self, stt_ms: float) -> None:
-        """Anchor turn_latency_ms at transcript-ready for voice turns (9D)."""
+    def _start_turn_clock(self, stt_ms: float, provider: str = "local") -> None:
+        """Anchor turn_latency_ms at transcript-ready for voice turns (9D).
+        Records the REAL STT provider so the breakdown never lies (9.1B)."""
         self._turn_t0 = time.perf_counter()
         self._last_turn_stt_ms = stt_ms or 0.0
+        self._last_turn_stt_provider = provider
 
     def _on_audio_level(self, level: float) -> None:
         """Forward the TTS amplitude envelope to the orb (High tier only)."""
@@ -865,6 +902,8 @@ class Controller:
                 "deepgram_model": c.deepgram_model,
                 "deepgram_key_masked": self.stt_router.masked_key(),
                 "deepgram_key_set": self.stt_router.deepgram.configured(),
+                "stt_stream_state": self.stt_router.streaming_status()[0],
+                "stt_stream_reason": self.stt_router.streaming_status()[1],
             })
 
     def _masked_groq_key(self) -> str:

@@ -137,6 +137,16 @@ function setChips(chips) {
     chip.querySelector(".chip-label").textContent = data.label || "";
     chip.dataset.state = data.state || "ok";
   }
+  // STT chip is dynamic: shown only when streaming mode is chosen (9.1B).
+  const sttChip = $("#chip-stt");
+  const sttData = chips && chips.stt;
+  if (sttChip) {
+    sttChip.classList.toggle("hidden", !sttData);
+    if (sttData) {
+      sttChip.querySelector(".chip-label").textContent = sttData.label || "";
+      sttChip.dataset.state = sttData.state || "ok";
+    }
+  }
 }
 
 /* ------------------------------------------- animation quality + canvases */
@@ -360,6 +370,9 @@ function settingsHtml(s) {
     <button class="ghost-btn" id="test-model">Test model</button>
 
     <h4 class="settings-section">Voice input (microphone &amp; speech-to-text)</h4>
+    ${s.stt_mode === "streaming" ? `<p class="settings-hint" style="color:${
+      s.stt_stream_state === "streaming" ? "var(--success)" : "var(--warn)"}">
+      ${s.stt_stream_state === "streaming" ? "✅" : "⚠"} ${esc(s.stt_stream_reason || "")}</p>` : ""}
     <div class="form-row"><label>Speech recognition</label>
       ${selectHtml("stt_mode", s.stt_mode, ["streaming", "local"])}</div>
     <p class="settings-hint">Streaming (Deepgram) is much faster — a final
