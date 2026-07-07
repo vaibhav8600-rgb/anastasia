@@ -56,8 +56,11 @@ def _chat_memory_lines(memory) -> list[str]:
     return lines
 
 
-def build_chat_messages(user_text: str, config, memory) -> list:
-    """Small-talk prompt kept below 250 estimated tokens."""
+def build_chat_messages(user_text: str, config, memory, history_turns=None) -> list:
+    """Small-talk prompt kept below 250 estimated tokens (system only).
+    history_turns is a list of {"role": "user"|"assistant", "text": ...}
+    prior turns inserted for conversational continuity (8D); the caller sizes
+    the window (10 on cloud, fewer on the local fallback)."""
     memory_lines = _chat_memory_lines(memory)
     user = "Vaibhav"
     for line in memory_lines:
@@ -76,8 +79,14 @@ def build_chat_messages(user_text: str, config, memory) -> list:
         "If the user actually asks you to DO something on the computer, reply exactly: "
         f"{CHAT_HANDOFF}"
     )
-    return [{"role": "system", "content": system},
-            {"role": "user", "content": user_text}]
+    messages = [{"role": "system", "content": system}]
+    for turn in (history_turns or []):
+        role = turn.get("role")
+        text = (turn.get("text") or "").strip()
+        if role in ("user", "assistant") and text:
+            messages.append({"role": role, "content": text})
+    messages.append({"role": "user", "content": user_text})
+    return messages
 
 
 def persona_prompt(config, memory) -> str:

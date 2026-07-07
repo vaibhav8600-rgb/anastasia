@@ -52,6 +52,9 @@ class SpeechOutput:
         self._piper_failures = 0
         self._setup_warned = set()          # one unconfigured-warning per backend
         self.on_tts_health_change = None    # callback() — chip refresh
+        self.on_first_audio = None          # callback(ms) — reply-ready -> audible
+        self._utterance_start = None        # perf_counter when a reply was queued
+        self._first_audio_pending = False
         self._thread = threading.Thread(target=self._worker, daemon=True,
                                         name="anna-tts")
         self._thread.start()
@@ -65,8 +68,27 @@ class SpeechOutput:
         """Queue text for speech and return immediately. Never raises."""
         if not text or not self.config.voice_enabled or self.config.tts_backend == "off":
             return
-        for sentence in split_sentences(text):
+        sentences = split_sentences(text)
+        if not sentences:
+            return
+        # Mark the start of a fresh utterance (idle queue + not speaking) so we
+        # can measure reply-ready -> first audible sample (tts_first_audio_ms).
+        if self._queue.empty() and not self.speaking:
+            self._utterance_start = time.perf_counter()
+            self._first_audio_pending = True
+        for sentence in sentences:
             self._queue.put(sentence)
+
+    def _mark_first_audio(self) -> None:
+        """Called at the instant playback of the first sentence begins."""
+        if self._first_audio_pending and self._utterance_start is not None:
+            self._first_audio_pending = False
+            ms = (time.perf_counter() - self._utterance_start) * 1000
+            if self.on_first_audio:
+                try:
+                    self.on_first_audio(ms)
+                except Exception:
+                    pass
 
     def cancel(self) -> None:
         """Barge-in: stop current playback, drop queued speech, reopen mic."""
@@ -255,6 +277,7 @@ class SpeechOutput:
             duration = wf.getnframes() / float(wf.getframerate() or 1)
         winsound.PlaySound(str(wav_path),
                            winsound.SND_FILENAME | winsound.SND_ASYNC)
+        self._mark_first_audio()
         cancelled = self._cancel.wait(duration + 0.1)
         if cancelled:
             winsound.PlaySound(None, winsound.SND_PURGE)
@@ -280,6 +303,7 @@ class SpeechOutput:
                 ["powershell", "-NoProfile", "-Command", script],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 creationflags=creation)
+        self._mark_first_audio()   # SAPI begins speaking as the process runs
         proc = self._proc
         deadline = time.monotonic() + 90
         while proc.poll() is None and time.monotonic() < deadline:

@@ -105,6 +105,7 @@ class AppConfig(BaseModel):
     whisper_cpp_exe: str = ""            # path to whisper.cpp main/whisper-cli exe
     whisper_cpp_model: str = ""          # path to ggml model file
     sample_rate: int = 16000
+    microphone_device: str = ""         # empty = use the system default mic
     silence_auto_stop: bool = True
     silence_threshold: float = 0.012     # RMS on 0..1 scale
     silence_seconds: float = 1.2
@@ -112,7 +113,7 @@ class AppConfig(BaseModel):
 
     # TTS
     tts_backend: str = "auto"            # auto | piper | kokoro | windows | off
-    piper_exe: str = ""                  # path to piper.exe
+    piper_exe: str = ""                  # optional path to piper.exe fallback
     piper_voice: str = ""                # path to .onnx voice model
     piper_length_scale: float = 1.08      # >1 is a slightly more relaxed pace
     kokoro_model: str = ""               # path to kokoro-v1.0.onnx
@@ -130,6 +131,11 @@ class AppConfig(BaseModel):
 
     # UI
     animation_quality: str = "medium"    # "low" | "medium" | "high"
+
+    # Conversation (8D): after a spoken chat reply, briefly reopen the mic for
+    # a follow-up without pressing PTT. Off by default; half-duplex still applies.
+    hands_free_followup: bool = False
+    hands_free_window_s: float = 6.0
 
     # Tools
     default_browser: str = ""            # empty = system default; or alias key e.g. "chrome"

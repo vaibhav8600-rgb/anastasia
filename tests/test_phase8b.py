@@ -1,13 +1,12 @@
-"""Phase 8B: Piper binary validation (reject pip entry points) + TTS
-circuit breaker (bench after 2 failures, single warning, retry restores)."""
+"""Phase 8B: official Piper runtime validation + TTS circuit breaker."""
 
+import json
 import wave
 
 import app.voice.tts_piper as tts_piper
 from app.agent.devlog import devlog
 from app.voice.speech_output import SpeechOutput, _short_error
-from app.voice.tts_piper import (PIP_PIPER_MESSAGE, looks_like_pip_piper,
-                                 piper_setup_status, validate_piper_config)
+from app.voice.tts_piper import piper_setup_status, validate_piper_config
 from tests.fakes import FakeHistory, make_config
 
 
@@ -35,16 +34,38 @@ def make_speech(tmp_path, monkeypatch, backend="auto"):
 
 # ---- 8B.1 validation ---------------------------------------------------------
 
-def test_piper_venv_path_rejected_with_specific_error():
-    for bad in (r"F:\Projects\anastasia\.venv\Scripts\piper.exe",
-                "C:/x/venv/Scripts/piper.exe",
-                "C:/Python313/Scripts/piper.exe"):
-        assert looks_like_pip_piper(bad), bad
-        config = make_config(piper_exe=bad, piper_voice="C:/v/amy.onnx")
-        ok, message = piper_setup_status(config)
-        assert not ok and message == PIP_PIPER_MESSAGE
-    # the real binary location is fine
-    assert not looks_like_pip_piper("C:/tools/piper/piper.exe")
+def test_piper_tts_runtime_accepts_venv_entry_point_when_voice_is_valid(
+        tmp_path, monkeypatch):
+    voice = tmp_path / "amy.onnx"
+    voice.write_bytes(b"placeholder")
+    voice.with_suffix(".onnx.json").write_text(json.dumps({
+        "audio": {"sample_rate": 22050},
+        "espeak": {"voice": "en-us"},
+        "num_symbols": 42,
+        "num_speakers": 1,
+        "phoneme_id_map": {"_": [0]},
+        "phoneme_type": "espeak",
+    }), encoding="utf-8")
+    monkeypatch.setattr(tts_piper, "_official_piper_version", lambda: "1.4.2")
+    config = make_config(
+        piper_exe=r"F:\Projects\anastasia\.venv\Scripts\piper.exe",
+        piper_voice=str(voice),
+    )
+    ok, message = piper_setup_status(config)
+    assert ok
+    assert "piper-tts 1.4.2" in message
+
+
+def test_piper_setup_rejects_incomplete_voice_metadata(tmp_path, monkeypatch):
+    voice = tmp_path / "amy.onnx"
+    voice.write_bytes(b"placeholder")
+    voice.with_suffix(".onnx.json").write_text(
+        '{"audio": {"voice": "amy"}}', encoding="utf-8")
+    monkeypatch.setattr(tts_piper, "_official_piper_version", lambda: "1.4.2")
+    ok, message = piper_setup_status(make_config(piper_voice=str(voice)))
+    assert not ok
+    assert "incomplete" in message.lower()
+    assert voice.with_suffix(".onnx.json").name in message
 
 
 def test_piper_probe_requires_nonempty_wav(monkeypatch, tmp_path):
@@ -64,7 +85,7 @@ def test_piper_selected_but_unconfigured_falls_back_with_one_warning(
     devlog.echo_to_stdout = False
     try:
         config = make_config(tts_backend="piper",
-                             piper_exe=r"F:\x\.venv\Scripts\piper.exe",
+                             piper_exe="",
                              piper_voice="C:/v/amy.onnx")
         monkeypatch.setattr("app.voice.speech_output.TTS_ERROR_LOG",
                             tmp_path / "tts.log")
@@ -145,7 +166,7 @@ def test_tts_error_logs_truncated(tmp_path, monkeypatch):
         for entry in devlog.entries(100):
             assert len(entry["message"]) < 320
             assert "\n" not in entry["message"].replace(
-                "— using the Windows voice. Fix the paths in Settings "
+                "? using the Windows voice. Fix the paths in Settings "
                 "and press Validate Piper to restore it.", "")
         speech._speak("hi again")           # second failure -> file traceback
         log_file = tmp_path / "tts_errors.log"

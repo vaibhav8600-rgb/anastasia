@@ -276,9 +276,13 @@ function historyHtml(rows) {
 }
 
 function selectHtml(id, value, options) {
-  return `<select id="set-${id}">${options.map(o =>
-    `<option value="${o}" ${o === String(value) ? "selected" : ""}>${o}</option>`)
-    .join("")}</select>`;
+  return `<select id="set-${id}">${(options || []).map((option) => {
+    const opt = (typeof option === "string")
+      ? { value: option, label: option }
+      : { value: String(option.id ?? option.value ?? ""),
+          label: String(option.label ?? option.name ?? option.id ?? option.value ?? "") };
+    return `<option value="${esc(opt.value)}" ${opt.value === String(value ?? "") ? "selected" : ""}>${esc(opt.label)}</option>`;
+  }).join("")}</select>`;
 }
 
 function settingsHtml(s) {
@@ -288,6 +292,13 @@ function settingsHtml(s) {
       <input id="set-user_name" value="${esc(s.user_name || "")}"></div>
     <div class="form-row"><label>Animation quality</label>
       ${selectHtml("animation_quality", s.animation_quality, ["low", "medium", "high"])}</div>
+    <div class="form-row" style="flex-direction:row;align-items:center;gap:10px">
+      <input type="checkbox" id="set-hands_free_followup"
+             ${s.hands_free_followup ? "checked" : ""} style="width:auto">
+      <label for="set-hands_free_followup" style="margin:0">
+        Hands-free follow-up: after Anna answers by voice, reopen the mic for
+        ~6s so you can reply without pressing the hotkey.</label>
+    </div>
 
     <h4 class="settings-section">Cloud brain</h4>
     <div class="form-row"><label>Cloud brain (faster, needs internet)</label>
@@ -341,6 +352,11 @@ function settingsHtml(s) {
     <button class="ghost-btn" id="test-model">Test model</button>
 
     <h4 class="settings-section">Voice input (microphone &amp; speech-to-text)</h4>
+    <div class="form-row"><label>Microphone</label>
+      ${selectHtml("microphone_device", s.microphone_device || "",
+        s.microphone_options || [{ id: "", label: "System default microphone" }])}</div>
+    <p class="settings-hint">Pick a specific mic if you want, or leave this on the system default.</p>
+    ${s.microphone_note ? `<p class="settings-hint">${esc(s.microphone_note)}</p>` : ""}
     <div class="form-row"><label>Whisper model (bigger = slower, more accurate)</label>
       ${selectHtml("faster_whisper_model", s.faster_whisper_model,
         ["tiny", "base", "base.en", "small", "small.en"])}</div>
@@ -362,17 +378,16 @@ function settingsHtml(s) {
 
     <div class="voice-setup-card">
       <h5>Set up Piper</h5>
-      <ol><li>Download <b>piper_windows_amd64.zip</b> from
-        <a href="https://github.com/rhasspy/piper/releases" target="_blank">Piper releases</a>
-        and extract it (suggested: <code>C:\\tools\\piper\\</code>).</li>
-      <li>Download a voice <code>.onnx</code> and matching <code>.onnx.json</code> from
-        <a href="https://huggingface.co/rhasspy/piper-voices" target="_blank">Piper voices</a>.
-        Try <b>en_US-hfc_female-medium</b>, or <b>en_US-amy-medium</b>.</li></ol>
-      <div class="form-row"><label>Piper executable</label><div class="file-row">
+      <ol><li>Install the official runtime from
+        <a href="https://github.com/OHF-Voice/piper1-gpl" target="_blank">OHF-Voice/piper1-gpl</a>
+        with <code>pip install piper-tts</code>.</li>
+      <li>Download a voice plus its matching <code>.onnx.json</code> config.
+        The official docs support <code>python -m piper.download_voices en_US-lessac-medium</code>.</li></ol>
+      <div class="form-row"><label>Piper executable (optional legacy fallback)</label><div class="file-row">
         <input id="set-piper_exe" value="${esc(s.piper_exe || "")}" placeholder="C:\\tools\\piper\\piper.exe">
         <button class="ghost-btn pick-voice-file" data-pick="piper_exe">Browse</button></div></div>
       <div class="form-row"><label>Piper voice model (.onnx; matching JSON auto-detected)</label><div class="file-row">
-        <input id="set-piper_voice" value="${esc(s.piper_voice || "")}" placeholder="en_US-hfc_female-medium.onnx">
+        <input id="set-piper_voice" value="${esc(s.piper_voice || "")}" placeholder="en_US-lessac-medium.onnx">
         <button class="ghost-btn pick-voice-file" data-pick="piper_voice">Browse</button></div></div>
       <div class="form-row"><label>Voice speed / Piper length scale (1.08 = relaxed)</label>
         <input id="set-piper_length_scale" type="number" step="0.01" min="0.5" max="2"
@@ -423,9 +438,11 @@ function collectSettings() {
     cloud_model: val("cloud_model"),
     cloud_timeout_s: parseFloat(val("cloud_timeout_s")) || 8,
     allow_clipboard_to_cloud: !!$("#set-allow_clipboard_to_cloud")?.checked,
+    hands_free_followup: !!$("#set-hands_free_followup")?.checked,
     // key only travels when the user actually typed one (never the mask)
     ...(val("groq_api_key") ? { groq_api_key: val("groq_api_key") } : {}),
     faster_whisper_model: val("faster_whisper_model"),
+    microphone_device: val("microphone_device"),
     stt_language: val("stt_language"),
     silence_seconds: parseFloat(val("silence_seconds")) || 1.2,
     max_record_seconds: parseInt(val("max_record_seconds"), 10) || 8,

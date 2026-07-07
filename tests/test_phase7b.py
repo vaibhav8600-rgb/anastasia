@@ -105,11 +105,20 @@ def test_microphone_device_logged_once_per_session(monkeypatch):
         def close(self):
             pass
 
+    devices = [{
+        "name": "Test microphone",
+        "hostapi": 0,
+        "max_input_channels": 1,
+        "default_samplerate": 48000,
+    }]
+
+    def query_devices(kind=None, **_kwargs):
+        return devices[0] if kind == "input" else devices
+
     fake_sd = types.SimpleNamespace(
         InputStream=FakeStream,
-        query_devices=lambda **_kwargs: {
-            "name": "Test microphone", "default_samplerate": 48000,
-        },
+        query_devices=query_devices,
+        query_hostapis=lambda: [{"name": "WASAPI"}],
     )
     monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
     monkeypatch.setattr(devlog, "echo_to_stdout", False)
@@ -123,6 +132,103 @@ def test_microphone_device_logged_once_per_session(monkeypatch):
                 if entry["message"].startswith("Microphone input:")]
     assert len(messages) == 1
     assert "Test microphone" in messages[0] and "16000Hz mono" in messages[0]
+
+
+def test_selected_microphone_is_passed_to_inputstream(monkeypatch):
+    calls = []
+
+    class FakeStream:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+        def close(self):
+            pass
+
+    devices = [
+        {
+            "name": "Laptop Mic",
+            "hostapi": 0,
+            "max_input_channels": 1,
+            "default_samplerate": 48000,
+        },
+        {
+            "name": "USB Mic",
+            "hostapi": 0,
+            "max_input_channels": 1,
+            "default_samplerate": 44100,
+        },
+    ]
+
+    def query_devices(kind=None, **_kwargs):
+        return devices[0] if kind == "input" else devices
+
+    fake_sd = types.SimpleNamespace(
+        InputStream=FakeStream,
+        query_devices=query_devices,
+        query_hostapis=lambda: [{"name": "WASAPI"}],
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    recorder = Recorder(make_config(
+        microphone_device="mic::1::USB Mic|WASAPI|1|44100"))
+    recorder.start()
+    recorder.stop()
+
+    assert calls and calls[0]["device"] == 1
+
+
+def test_unavailable_microphone_falls_back_to_default_with_warning(monkeypatch):
+    from app.agent.devlog import devlog
+
+    calls = []
+
+    class FakeStream:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+        def close(self):
+            pass
+
+    devices = [{
+        "name": "Laptop Mic",
+        "hostapi": 0,
+        "max_input_channels": 1,
+        "default_samplerate": 48000,
+    }]
+
+    def query_devices(kind=None, **_kwargs):
+        return devices[0] if kind == "input" else devices
+
+    fake_sd = types.SimpleNamespace(
+        InputStream=FakeStream,
+        query_devices=query_devices,
+        query_hostapis=lambda: [{"name": "WASAPI"}],
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+    monkeypatch.setattr(devlog, "echo_to_stdout", False)
+    devlog.clear()
+
+    recorder = Recorder(make_config(
+        microphone_device="mic::9::Missing Mic|WASAPI|1|44100"))
+    recorder.start()
+    recorder.stop()
+
+    assert calls and calls[0]["device"] is None
+    warnings = [entry["message"] for entry in devlog.entries()
+                if entry["category"] == "warn"]
+    assert warnings and "isn't available" in warnings[0]
 
 
 def test_low_microphone_gain_hint_shown_once(monkeypatch):

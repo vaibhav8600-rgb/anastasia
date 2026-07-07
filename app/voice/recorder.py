@@ -11,6 +11,139 @@ class MicrophoneError(Exception):
     pass
 
 
+def _device_signature(name: str, hostapi: str, channels: int, sample_rate: int) -> str:
+    return f"{name}|{hostapi}|{channels}|{sample_rate}"
+
+
+def _normalize_devices(raw_devices) -> list[dict]:
+    if raw_devices is None:
+        return []
+    if isinstance(raw_devices, dict):
+        return [raw_devices]
+    return list(raw_devices)
+
+
+def _hostapi_name(sd, device: dict) -> str:
+    try:
+        hostapi_index = device.get("hostapi")
+        hostapis = _normalize_devices(sd.query_hostapis())
+        if isinstance(hostapi_index, int) and 0 <= hostapi_index < len(hostapis):
+            return str(hostapis[hostapi_index].get("name", "")).strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _input_device_entries(sd=None) -> list[dict]:
+    if sd is None:
+        import sounddevice as sd
+
+    raw_devices = _normalize_devices(sd.query_devices())
+    try:
+        default_device = sd.query_devices(kind="input")
+    except Exception:
+        default_device = None
+    default_signature = None
+    if isinstance(default_device, dict):
+        default_signature = _device_signature(
+            str(default_device.get("name", "Default microphone")),
+            _hostapi_name(sd, default_device),
+            int(default_device.get("max_input_channels", 0) or 0),
+            int(float(default_device.get("default_samplerate", 0) or 0)),
+        )
+
+    entries = []
+    for index, device in enumerate(raw_devices):
+        channels = int(device.get("max_input_channels", 0) or 0)
+        if channels <= 0:
+            continue
+        name = str(device.get("name", f"Input {index}"))
+        hostapi = _hostapi_name(sd, device)
+        sample_rate = int(float(device.get("default_samplerate", 0) or 0))
+        signature = _device_signature(name, hostapi, channels, sample_rate)
+        label = name if not hostapi else f"{name} ({hostapi})"
+        if signature == default_signature:
+            label += " - default"
+        entries.append({
+            "id": f"mic::{index}::{signature}",
+            "index": index,
+            "name": name,
+            "hostapi": hostapi,
+            "signature": signature,
+            "label": label,
+            "default_samplerate": sample_rate,
+            "is_default": signature == default_signature,
+        })
+    return entries
+
+
+def list_microphones() -> list[dict]:
+    try:
+        entries = _input_device_entries()
+    except Exception:
+        entries = []
+    options = [{"id": "", "label": "System default microphone"}]
+    options.extend({"id": entry["id"], "label": entry["label"]}
+                   for entry in entries)
+    return options
+
+
+def resolve_microphone_device(config, entries: list[dict] | None = None):
+    if entries is None:
+        try:
+            entries = _input_device_entries()
+        except Exception:
+            entries = []
+
+    preferred = str(getattr(config, "microphone_device", "") or "").strip()
+    if not preferred:
+        default_entry = next((entry for entry in entries if entry["is_default"]),
+                             entries[0] if entries else None)
+        return None, default_entry, ""
+
+    match = next((entry for entry in entries if entry["id"] == preferred), None)
+    if match is None and preferred.startswith("mic::") and "::" in preferred:
+        signature = preferred.split("::", 2)[-1]
+        signature_matches = [entry for entry in entries
+                             if entry["signature"] == signature]
+        if len(signature_matches) == 1:
+            match = signature_matches[0]
+    if match is None and preferred.isdigit():
+        match = next((entry for entry in entries if entry["index"] == int(preferred)), None)
+    if match is None:
+        name_matches = [entry for entry in entries if entry["name"] == preferred]
+        if len(name_matches) == 1:
+            match = name_matches[0]
+
+    if match is not None:
+        return match["index"], match, ""
+
+    default_entry = next((entry for entry in entries if entry["is_default"]),
+                         entries[0] if entries else None)
+    warning = (f"Selected microphone '{preferred}' isn't available, so Anna is "
+               "using the system default microphone.")
+    return None, default_entry, warning
+
+
+def microphone_dropdown_state(config):
+    try:
+        entries = _input_device_entries()
+    except Exception:
+        entries = []
+    options = [{"id": "", "label": "System default microphone"}]
+    options.extend({"id": entry["id"], "label": entry["label"]}
+                   for entry in entries)
+    preferred = str(getattr(config, "microphone_device", "") or "").strip()
+    _device_arg, selected_entry, warning = resolve_microphone_device(config, entries=entries)
+    if preferred and selected_entry is not None and not warning:
+        selected_id = selected_entry["id"]
+    else:
+        selected_id = ""
+    note = warning if warning else ("No microphones detected right now."
+                                    if not entries else "")
+    return options, selected_id, note
+
+
 class Recorder:
     def __init__(self, config):
         self.config = config
@@ -21,7 +154,8 @@ class Recorder:
         self._silence_start = None
         self._start_time = 0.0
         self._on_auto_stop = None
-        self._device_logged = False
+        self._last_logged_device = None
+        self._last_device_warning = None
 
     @property
     def recording(self) -> bool:
@@ -37,6 +171,7 @@ class Recorder:
         except Exception as e:
             raise MicrophoneError(f"Audio library unavailable: {e}") from e
 
+        device_arg, device_info, warning = resolve_microphone_device(self.config)
         self._frames = []
         self._speech_seen = False
         self._silence_start = None
@@ -44,24 +179,28 @@ class Recorder:
         self._start_time = time.time()
         try:
             self._stream = sd.InputStream(
-                samplerate=self.config.sample_rate, channels=1,
+                samplerate=self.config.sample_rate, channels=1, device=device_arg,
                 dtype="int16", callback=self._callback)
             self._stream.start()
         except Exception as e:
             self._stream = None
             raise MicrophoneError(f"Could not open the microphone: {e}") from e
         self._recording = True
-        if not self._device_logged:
-            try:
-                from app.agent.devlog import devlog
-                device = sd.query_devices(kind="input")
-                name = str(device.get("name", "Default microphone"))
-                default_rate = int(float(device.get("default_samplerate", 0) or 0))
-                devlog.log(f"Microphone input: {name} | capture: "
+        try:
+            from app.agent.devlog import devlog
+            if warning and warning != self._last_device_warning:
+                devlog.warn(warning)
+                self._last_device_warning = warning
+            elif not warning:
+                self._last_device_warning = None
+            label = (device_info or {}).get("label", "System default microphone")
+            if label != self._last_logged_device:
+                default_rate = int((device_info or {}).get("default_samplerate", 0) or 0)
+                devlog.log(f"Microphone input: {label} | capture: "
                            f"{self.config.sample_rate}Hz mono | device: {default_rate}Hz")
-                self._device_logged = True
-            except Exception:
-                pass
+                self._last_logged_device = label
+        except Exception:
+            pass
 
     def _callback(self, indata, frames, time_info, status) -> None:
         if not self._recording:
@@ -140,7 +279,6 @@ def normalize_audio_for_stt(data, source_rate: int, target_rate: int = 16000):
 
 def microphone_available() -> bool:
     try:
-        import sounddevice as sd
-        return any(d.get("max_input_channels", 0) > 0 for d in sd.query_devices())
+        return bool(_input_device_entries())
     except Exception:
         return False

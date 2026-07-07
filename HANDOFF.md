@@ -1,6 +1,24 @@
 # HANDOFF — Anastasia (Anna) overhaul
 
-> **Phase 8 status: 8A + 8B DONE (approved/live), 8C in progress, 8D next.**
+> **Phase 8 COMPLETE (8A-8D). 202 tests passing.** 8D: TTS delay root-caused
+> and fixed — `python -m piper` per sentence cost 4.6s each (interpreter +
+> onnxruntime + model load repeated); now an in-process warm PiperVoice
+> (tts_piper.get_inproc_voice/_synthesize_inproc/warm_piper) loads once at
+> startup (~3.1s hidden) and synthesizes each sentence in ~0.2-0.4s.
+> synthesize_piper tries in-process first, subprocess fallback. Live voice
+> turn "how are you": STT ~3s + Groq LLM ~1s + tts_first ~0.4s = ~4.5s
+> (target <=6s). Added: tts_first_audio_ms telemetry (speech.on_first_audio ->
+> devlog), 10-turn hybrid chat context (build_chat_messages history_turns;
+> agent.recent_chat_turns set by controller._recent_chat_turns from the
+> Conversation model; 10 cloud / 4 local), optional hands_free_followup
+> (default off, config hands_free_window_s=6, pipeline arm_followup hook ->
+> controller reopens mic after a spoken chat reply). Safety proof test:
+> test_groq_plan_still_passes_local_safety_validator (cloud plan understating
+> risk still gets locally escalated to confirmation). README hybrid+privacy+
+> piper-warm sections added.
+>
+> --- earlier Phase 8 notes ---
+> **8A + 8B DONE (approved/live), 8C done.**
 > 8A hybrid brain: app/llm/providers.py — GroqProvider (OpenAI-compat,
 > json_object mode, typed errors), OllamaProvider (getter-based), BrainRouter
 > (hybrid→Groq 8s→Ollama 15s capped fallback→BrainUnavailable honest msg;

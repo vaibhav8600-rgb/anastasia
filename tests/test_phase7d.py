@@ -32,7 +32,7 @@ def test_chat_input_routes_to_chat_mode():
                       chat_plan=ActionPlan(intent="no_action",
                                            assistant_message="I'm good!"))
     pipeline, _ui = pipeline_with(agent)
-    pipeline.submit("How about you", source="typed")
+    pipeline.submit("Hello, how are you doing?", source="typed")
     assert agent.chat_calls == 1 and agent.llm_calls == 0
 
 
@@ -56,7 +56,7 @@ def test_chat_mode_reply_is_llm_text_not_canned():
                       chat_plan=ActionPlan(intent="no_action",
                                            assistant_message=reply))
     pipeline, ui = pipeline_with(agent)
-    pipeline.submit("How about you", source="typed")
+    pipeline.submit("Hello, how are you doing?", source="typed")
     assert ui.annas == [reply]
 
 
@@ -87,6 +87,10 @@ def test_handoff_marker_reruns_command_mode():
 def test_ambiguous_input_prefers_command_mode():
     assert classify_input_mode("weather tomorrow") == "command"
     assert classify_input_mode("maybe the project later") == "command"
+
+
+def test_greeting_with_punctuation_routes_to_chat_mode():
+    assert classify_input_mode("Hello, how are you doing?") == "chat"
 
 
 def test_chat_model_config_respected():

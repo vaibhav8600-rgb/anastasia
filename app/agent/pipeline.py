@@ -273,6 +273,12 @@ class CommandPipeline:
                        f"risk={plan.risk_level} confirm={plan.requires_confirmation}")
 
             if plan.intent in ("ask_clarification", "no_action"):
+                # After a spoken conversational reply, optionally reopen the
+                # mic for a hands-free follow-up (8D; controller decides).
+                if (trace.route == "chat" and plan.intent == "no_action"
+                        and source in ("voice", "wake_word")
+                        and hasattr(self.ui, "arm_followup")):
+                    self.ui.arm_followup()
                 self._respond(plan.assistant_message or "Okay.", transcript, plan, trace)
                 return
 

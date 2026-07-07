@@ -24,7 +24,9 @@ from app.agent.memory import Memory
 from app.agent.pipeline import CommandPipeline
 from app.agent.router import Agent
 from app.config import AppConfig
-from app.voice.recorder import MicrophoneError, Recorder, microphone_available
+from app.voice.recorder import (MicrophoneError, Recorder,
+                                microphone_available,
+                                microphone_dropdown_state)
 from app.voice.speech_output import SpeechOutput
 
 APPROVE_WORDS = {"approve", "approved", "yes", "yeah", "yep", "haan", "confirm", "go ahead", "do it"}
@@ -55,6 +57,8 @@ class Controller:
         self._low_mic_warned = False
         self.last_state = "ready"          # for full_state re-hydration
         self.chips = {}                    # top-bar status chips
+        self._followup_armed = False       # hands-free follow-up (8D)
+        self.last_tts_first_audio_ms = 0.0
 
         if ui is None:
             raise ValueError("Controller requires a ui (UIBridge or test fake).")
@@ -69,6 +73,10 @@ class Controller:
             self.agent.brain.on_state_change = self._on_brain_state
         # live Voice chip update when the TTS circuit benches/restores Piper
         self.speech.on_tts_health_change = self._on_brain_state
+        # reply-ready -> first audible sample telemetry (8D)
+        self.speech.on_first_audio = self._on_first_audio
+        # recent chat turns for conversational continuity (8D)
+        self.agent.recent_chat_turns = self._recent_chat_turns
 
         if autostart:
             self._register_hotkey()
@@ -124,6 +132,27 @@ class Controller:
             self.set_state("speaking")
         elif not self.pipeline.is_processing_command and self.pipeline.pending is None:
             self.set_state("ready")
+            if self._followup_armed:
+                self._followup_armed = False
+                self._start_followup_listen()
+
+    def arm_followup(self) -> None:
+        """Pipeline hook: after a spoken chat reply, arm a hands-free
+        follow-up (only if enabled). Fires when speech finishes."""
+        if getattr(self.config, "hands_free_followup", False):
+            self._followup_armed = True
+
+    def _start_followup_listen(self) -> None:
+        """Reopen the mic without PTT for one follow-up (half-duplex still
+        applies; silence auto-stop closes it)."""
+        def worker():
+            import time as _t
+            _t.sleep(0.15)   # let the gate's echo tail clear first
+            if self.recorder.recording or self.pipeline.is_processing_command:
+                return
+            devlog.log("Hands-free: listening for a follow-up.")
+            self._ui(lambda: self.toggle_mic("voice"))
+        threading.Thread(target=worker, daemon=True).start()
 
     # ------------------------------------------------------- startup
     def _startup_checks(self) -> None:
@@ -212,6 +241,11 @@ class Controller:
             devlog.log(f"Piper startup probe: {probe_msg}")
             if probe_ok:
                 self.speech.reset_piper_circuit()
+                # Preload the voice so the first spoken sentence is fast
+                # (~0.3s) instead of paying a cold model load mid-reply.
+                from app.voice.tts_piper import warm_piper
+                warm_piper(self.config)
+                devlog.log("Piper voice preloaded (warm, in-process).")
             else:
                 self.speech.piper_unhealthy = True
                 issues.append("Piper isn't working (details in Developer Tools) "
@@ -227,6 +261,23 @@ class Controller:
 
     def _on_brain_state(self) -> None:
         self._push_chips(self.chips.get("model", {}).get("state", "offline"))
+
+    def _on_first_audio(self, ms: float) -> None:
+        self.last_tts_first_audio_ms = ms
+        devlog.log(f"tts_first_audio_ms: {ms:.0f}ms (reply ready -> first sound)")
+
+    def _recent_chat_turns(self, max_turns: int) -> list:
+        """Prior user/assistant turns for chat context (8D). Maps the
+        conversation model's roles; drops info/error lines."""
+        turns = []
+        for entry in self.conversation.snapshot():
+            role = entry.get("role")
+            if role == "user":
+                turns.append({"role": "user", "text": entry.get("text", "")})
+            elif role == "anna" and not entry.get("action"):
+                turns.append({"role": "assistant", "text": entry.get("text", "")})
+        # exclude the just-added current user line; keep the last max_turns
+        return turns[-(max_turns + 1):-1] if len(turns) > max_turns else turns[:-1]
 
     def brain_info(self) -> dict:
         """js_api: Brain chip popover data. Never contains the API key."""
@@ -525,6 +576,8 @@ class Controller:
         """js_api: send current settings to the frontend modal."""
         if hasattr(self.ui, "dispatch"):
             c = self.config
+            microphone_options, microphone_device, microphone_note = \
+                microphone_dropdown_state(c)
             self.ui.dispatch("settings", {
                 "user_name": str(self.memory.get("user_name", "") or ""),
                 "ollama_url": c.ollama_url,
@@ -542,6 +595,9 @@ class Controller:
                 "tts_rate": c.tts_rate,
                 "tts_volume": c.tts_volume,
                 "faster_whisper_model": c.faster_whisper_model,
+                "microphone_device": microphone_device,
+                "microphone_options": microphone_options,
+                "microphone_note": microphone_note,
                 "stt_language": c.stt_language,
                 "silence_seconds": c.silence_seconds,
                 "max_record_seconds": c.max_record_seconds,
@@ -550,6 +606,7 @@ class Controller:
                 "cloud_model": c.cloud_model,
                 "cloud_timeout_s": c.cloud_timeout_s,
                 "allow_clipboard_to_cloud": c.allow_clipboard_to_cloud,
+                "hands_free_followup": c.hands_free_followup,
                 "groq_key_masked": self._masked_groq_key(),
                 "groq_key_set": self.agent.brain.groq.configured()
                                 if hasattr(self.agent, "brain") else False,
@@ -569,10 +626,12 @@ class Controller:
         "piper_length_scale": float,
         "kokoro_model": str, "kokoro_voices": str, "kokoro_voice": str,
         "tts_rate": float, "tts_volume": int,
-        "faster_whisper_model": str, "stt_language": str,
+        "faster_whisper_model": str, "microphone_device": str,
+        "stt_language": str,
         "silence_seconds": float, "max_record_seconds": int,
         "brain_mode": str, "cloud_model": str, "cloud_timeout_s": float,
         "allow_clipboard_to_cloud": bool,
+        "hands_free_followup": bool,
     }
     _SETTINGS_CHOICES = {
         "animation_quality": {"low", "medium", "high"},
@@ -621,8 +680,8 @@ class Controller:
             from app.voice.tts_piper import piper_available
             if self.config.tts_backend == "piper" and not piper_available(self.config):
                 self.show_info("Piper is selected but not fully configured — "
-                               "I'll use the Windows voice until the exe and "
-                               "voice paths are set.")
+                               "I'll use the Windows voice until the runtime "
+                               "and voice files are set.")
             from app.voice.tts_kokoro import kokoro_available
             if self.config.tts_backend == "kokoro" and not kokoro_available(self.config):
                 self.show_info("Kokoro is selected but its package or model files "

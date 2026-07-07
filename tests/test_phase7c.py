@@ -1,5 +1,6 @@
 """Phase 7C: natural TTS delivery, setup diagnostics, and warm responses."""
 
+import json
 import os
 import time
 
@@ -60,7 +61,14 @@ def test_piper_setup_requires_matching_json(tmp_path):
     ok, message = piper_setup_status(
         make_config(piper_exe=str(exe), piper_voice=str(voice)))
     assert not ok and ".onnx.json" in message
-    voice.with_suffix(".onnx.json").write_text("{}", encoding="utf-8")
+    voice.with_suffix(".onnx.json").write_text(json.dumps({
+        "audio": {"sample_rate": 22050},
+        "espeak": {"voice": "en-us"},
+        "num_symbols": 42,
+        "num_speakers": 1,
+        "phoneme_id_map": {"_": [0]},
+        "phoneme_type": "espeak",
+    }), encoding="utf-8")
     assert piper_setup_status(
         make_config(piper_exe=str(exe), piper_voice=str(voice)))[0]
 

@@ -50,8 +50,9 @@ def test_voice_settings_roundtrip():
         "kokoro_model": "C:/tools/kokoro/kokoro-v1.0.onnx",
         "kokoro_voices": "C:/tools/kokoro/voices-v1.0.bin",
         "kokoro_voice": "af_bella",
-        "faster_whisper_model": "small", "stt_language": "en",
-        "silence_seconds": 2.0, "max_record_seconds": 12,
+        "faster_whisper_model": "small", "microphone_device": "mic::2::USB Mic|WASAPI|1|48000",
+        "stt_language": "en", "silence_seconds": 2.0,
+        "max_record_seconds": 12,
     })
     c = controller.config
     assert (c.tts_backend, c.tts_rate, c.tts_volume) == ("windows", 1.4, 70)
@@ -59,6 +60,7 @@ def test_voice_settings_roundtrip():
     assert c.piper_exe.endswith("piper.exe")
     assert c.piper_length_scale == 1.08 and c.kokoro_voice == "af_bella"
     assert (c.faster_whisper_model, c.stt_language) == ("small", "en")
+    assert c.microphone_device == "mic::2::USB Mic|WASAPI|1|48000"
     assert (c.silence_seconds, c.max_record_seconds) == (2.0, 12)
 
     controller.open_settings()
@@ -68,6 +70,26 @@ def test_voice_settings_roundtrip():
     assert payload["stt_language"] == "en"
     assert payload["piper_voice"].endswith("amy.onnx")
     assert payload["kokoro_model"].endswith("kokoro-v1.0.onnx")
+
+
+def test_open_settings_includes_microphone_dropdown(monkeypatch):
+    bridge, window, controller = make_web_controller()
+    selected = "mic::1::USB Mic|WASAPI|1|48000"
+    controller.save_settings({"microphone_device": selected})
+    monkeypatch.setattr(
+        "app.main.microphone_dropdown_state",
+        lambda _cfg: ([
+            {"id": "", "label": "System default microphone"},
+            {"id": selected, "label": "USB Mic (WASAPI)"},
+        ], selected, "USB Mic is ready."),
+    )
+
+    controller.open_settings()
+    payload = window.of_type("settings")[-1]["payload"]
+    assert payload["microphone_device"] == selected
+    assert payload["microphone_options"][0]["label"] == "System default microphone"
+    assert payload["microphone_options"][1]["id"] == selected
+    assert payload["microphone_note"] == "USB Mic is ready."
 
 
 def test_invalid_choices_are_rejected():

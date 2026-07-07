@@ -61,22 +61,46 @@ primer built from your configured apps/folders. If recognition is weak, try
 Works out of the box with the built-in Windows voice. For a much more
 natural voice, install **Piper**:
 
-1. Download **the standalone binary** `piper_windows_amd64.zip` from
-   https://github.com/rhasspy/piper/releases and extract it (e.g. to
-   `C:\tools\piper`). ⚠ Do **NOT** `pip install piper` — that installs an
-   unrelated Python package whose `piper.exe` crashes; Anna rejects
-   venv/Scripts paths for exactly this reason.
-2. Download `en_US-hfc_female-medium.onnx` (or `en_US-amy-medium.onnx`)
-   plus its matching `.onnx.json`: https://huggingface.co/rhasspy/piper-voices
-3. Settings → Voice output → select the extracted `piper.exe` and both voice
-   files → **Validate Piper** (synthesizes a real test phrase; also re-enables
-   Piper if it was auto-benched after failures).
+1. Install the official runtime from
+   https://github.com/OHF-Voice/piper1-gpl with `pip install piper-tts`.
+2. Download a voice and its matching config together. The official Piper docs
+   require both the `.onnx` model file and the matching `.onnx.json` config
+   file. A simple option is:
+   `python -m piper.download_voices --download-dir app\data\voices\piper en_US-lessac-medium`
+3. Settings -> Voice output -> select the `.onnx` file. `piper.exe` is now
+   optional and only used as a legacy fallback if you already have a standalone
+   Piper install.
+4. Press **Validate Piper**. Anna synthesizes a real test phrase and re-enables
+   Piper automatically if it had been benched after failures.
 
-Replies are synthesized sentence-by-sentence so speaking begins without
+The voice model loads once at startup and stays warm in-process, so each
+sentence synthesizes in ~0.2–0.4s (not the ~4.6s a cold `python -m piper`
+subprocess costs per sentence). Replies are synthesized sentence-by-sentence
+so speaking begins without
 waiting for the entire response. An optional Kokoro ONNX setup card is also
 available in Settings for a warmer voice (`af_heart` or `af_bella`).
 
-### 4. Run
+### 4. Cloud brain (optional, hugely faster on weak CPUs)
+
+A 3B local model on a 2017 laptop CPU takes ~10–20s per reply. **Hybrid mode**
+sends only your transcribed/typed text to Groq's free tier
+(`llama-3.3-70b-versatile`, ~1s replies) and automatically falls back to the
+local Ollama model if the cloud is unreachable.
+
+1. Get a free key at https://console.groq.com → API Keys.
+2. Settings → Cloud brain → paste it (or set the `GROQ_API_KEY` env var, which
+   wins over config), keep mode **hybrid**.
+3. The **Brain** chip shows `Groq · 70B` (green), `Local · 3B` (blue), or
+   `Local (cloud offline)` (amber). Click it for the circuit state and the
+   last 10 LLM calls. `brain_mode: "local_only"` disables the cloud entirely.
+
+**Privacy (enforced in code, see Settings → Privacy):** instant commands never
+use any AI model; hybrid sends only transcribed/typed text + recent chat turns;
+**files, screenshots and raw audio never leave this PC**; clipboard text stays
+local unless you enable the clipboard opt-in. If the cloud fails 3× in a row a
+circuit breaker routes everything local for 120s (no dead air), then probes.
+
+### 5. Run
 
 ```powershell
 python app\main.py            # the app
@@ -106,10 +130,12 @@ python app\main.py --doctor   # health check
 | Anna hears herself / transcribes her own voice | Can't happen by design (half-duplex gate mutes the mic during playback +0.4 s). If you use external speakers at high volume and see it anyway, file an issue with the Developer Tools log |
 | Voice input does nothing | Settings → Voice input → Test microphone; check the Mic chip in the top bar |
 | Robotic voice | Configure Piper (section 3 above) |
-| "Voice: Windows fallback (Piper error)" chip | Piper failed twice and was benched for the session. Fix the paths (binary, not pip!) and press Validate Piper. Full errors: `app/data/tts_errors.log` |
-| Piper crashes with `sys.exit(main())` | You configured a pip-installed `piper.exe`. Use the standalone binary from github.com/rhasspy/piper/releases |
+| "Voice: Windows fallback (Piper error)" chip | Piper failed twice and was benched for the session. Fix the Piper runtime or voice files, then press Validate Piper. Full errors: `app/data/tts_errors.log` |
+| Piper says "voice metadata is incomplete" | The selected `.onnx.json` is missing required Piper fields. Re-download the voice with `python -m piper.download_voices --force-redownload --download-dir app\data\voices\piper <voice-name>` |
 | Window doesn't open | Install the WebView2 runtime (link above) |
 | Wake word warning | `pip install openwakeword`, then re-enable the toggle |
+| "Brain: Local (cloud offline)" chip | Groq failed 3× (no internet / bad key / rate limit); circuit routes local for 120s then auto-probes. Check the key in Settings → Cloud brain |
+| Slow spoken replies | The voice model warms once at startup; if replies still lag, confirm the Brain chip is green (Groq) and see `tts_first_audio_ms` in Developer Tools |
 
 ## Development
 

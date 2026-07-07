@@ -75,19 +75,20 @@ _CHAT_OPENERS = (
 def classify_input_mode(raw: str, config=None) -> str:
     """Cheap, deterministic classifier. Ambiguity deliberately means command."""
     text = clean_command(raw, config) if config is not None else raw
-    text = (text or "").lower().strip(" .!?")
+    text = (text or "").lower().strip()
+    normalized = text.strip(" .!?")
+    leading_word = re.split(r"[^\w']+", normalized, maxsplit=1)[0] if normalized else ""
     if not text:
         return "command"
-    words = text.split()
-    if words[0] in _COMMAND_WORDS:
+    if leading_word in _COMMAND_WORDS:
         return "command"
     if re.search(r"\b(?:open|close|launch|run|type|copy|paste|minimize|maximize)\b",
-                 text):
+                 normalized):
         return "command"
-    if any(text == opener or text.startswith(opener + " ")
+    if any(re.match(rf"^{re.escape(opener)}(?:$|[^\w]+)", normalized)
            for opener in _CHAT_OPENERS):
         return "chat"
-    if text in {"okay", "ok", "yes", "no", "maybe", "nice", "cool"}:
+    if normalized in {"okay", "ok", "yes", "no", "maybe", "nice", "cool"}:
         return "chat"
     return "command"
 
@@ -328,6 +329,7 @@ class Agent:
         self.llm = OllamaClient(config)
         from app.llm.providers import BrainRouter
         self.brain = BrainRouter(config, lambda: self.llm)
+        self.recent_chat_turns = None   # set by controller -> conversation reader
 
     # -- planning -----------------------------------------------------
     def plan_rule(self, text: str) -> Optional[ActionPlan]:
@@ -357,8 +359,19 @@ class Agent:
     def plan_chat(self, text: str) -> tuple[ActionPlan, bool]:
         """Fast plain-text chat; command handoff re-enters structured planning."""
         chat_model = self.config.chat_model or self.config.ollama_model
+        # Conversational continuity (8D): 10 turns on the cloud brain (70B
+        # handles it, ~free on Groq), a smaller window on the local fallback.
+        cloud = self.brain.mode() == "hybrid" and not self.brain.circuit_open()
+        max_turns = 10 if cloud else 4
+        turns = []
+        if callable(self.recent_chat_turns):
+            try:
+                turns = self.recent_chat_turns(max_turns)
+            except Exception:
+                turns = []
         result = self.brain.complete(
-            "chat", build_chat_messages(text, self.config, self.memory),
+            "chat",
+            build_chat_messages(text, self.config, self.memory, history_turns=turns),
             model=chat_model)   # model applies to the local fallback only
         content = result.text.strip()
         normalized = content.strip("` \r\n")
