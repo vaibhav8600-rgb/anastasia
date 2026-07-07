@@ -302,8 +302,8 @@ class CommandPipeline:
             if not safety.allowed:
                 msg = (plan.assistant_message if plan.risk_level == "blocked" else "") \
                     or f"I won't do that one. {safety.reason}"
-                self.history.log(transcript, plan, safety, executed=False,
-                                 error=safety.reason)
+                self._safe_log(transcript, plan, safety, executed=False,
+                               error=safety.reason)
                 self._respond(msg, transcript, None, trace, log_history=False)
                 return
 
@@ -350,7 +350,7 @@ class CommandPipeline:
         """Anna answers with words only (no tool executed)."""
         self.ui.show_anna(message)
         if log_history:
-            self.history.log(transcript, plan, None, executed=False, result=message)
+            self._safe_log(transcript, plan, None, executed=False, result=message)
         if self._streamed_reply:
             return   # already spoken sentence-by-sentence during the stream
         t0 = time.perf_counter()
@@ -391,24 +391,34 @@ class CommandPipeline:
         """Barge-in hook: invalidate the in-flight chat stream."""
         self._stream_epoch = getattr(self, "_stream_epoch", 0) + 1
 
+    def _safe_log(self, *args, **kwargs) -> None:
+        """History logging is best-effort — it must NEVER affect the reported
+        outcome or crash the caller (9.1A). History.log is already non-fatal;
+        this is belt-and-suspenders for the error path."""
+        try:
+            self.history.log(*args, **kwargs)
+        except Exception as e:
+            devlog.warn(f"history log skipped: {' '.join(str(e).split())[:150]}")
+
     def _fail(self, transcript: str, message: str, trace) -> None:
         self.ui.set_state("error")
         self.ui.show_error(message)
-        self.history.log(transcript, None, None, executed=False, error=message)
+        self._safe_log(transcript, None, None, executed=False, error=message)
         self.speech.speak_async(message)
 
     def _run_tool(self, plan, safety, transcript: str, trace) -> None:
         self.ui.set_state("executing")
         t0 = time.perf_counter()
-        result = self.agent.execute(plan)
+        result = self.agent.execute(plan)   # ONLY this determines success
         trace.tool_ms = (time.perf_counter() - t0) * 1000
 
+        # 1) Report to the user based purely on the execution result — never
+        #    on whether logging works (9.1A.4: the close-paint crash reported
+        #    success as failure because the exception came from logging).
         msg = result.message or plan.assistant_message or "Done."
         if result.success:
             if plan.intent in ROTATED_ACTION_INTENTS:
                 msg = warm_action_responses.next(plan)
-            # Structured payload so the frontend can render a result card
-            # (e.g. screenshot preview with View/Copy/Save).
             self.ui.show_result(msg, {"intent": plan.intent,
                                       "success": True,
                                       "data": result.data})
@@ -419,12 +429,14 @@ class CommandPipeline:
                 devlog.warn(f"Tool error hidden from conversation: {msg}")
                 msg = "Hmm, my local brain tripped on that one. Try me again?"
             self.ui.show_error(msg)
-        self.history.log(transcript, plan, safety, executed=result.success,
-                         result=result.message if result.success else "",
-                         error="" if result.success else result.message)
         t0 = time.perf_counter()
         self.speech.speak_async(msg.split("\n")[0])   # short spoken form
         trace.tts_ms = (time.perf_counter() - t0) * 1000
+
+        # 2) Logging is best-effort and fully decoupled from the outcome above.
+        self._safe_log(transcript, plan, safety, executed=result.success,
+                       result=result.message if result.success else "",
+                       error="" if result.success else result.message)
 
     # ----------------------------------------------------- confirmation
     def _set_pending(self, plan, safety, transcript: str,
@@ -524,8 +536,8 @@ class CommandPipeline:
             return
         plan, safety, transcript = pending.plan, pending.safety, pending.transcript
         self.ui.hide_confirmation()
-        self.history.log(transcript, plan, safety, executed=False,
-                         result=f"cancelled ({reason})")
+        self._safe_log(transcript, plan, safety, executed=False,
+                       result=f"cancelled ({reason})")
         if reason == "timeout":
             timeout = (self.fuzzy_timeout_seconds if pending.kind == "fuzzy"
                        else self.confirm_timeout_seconds)
