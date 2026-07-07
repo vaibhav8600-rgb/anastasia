@@ -55,6 +55,8 @@ class SpeechOutput:
         self.on_first_audio = None          # callback(ms) — reply-ready -> audible
         self._utterance_start = None        # perf_counter when a reply was queued
         self._first_audio_pending = False
+        self.on_audio_level = None          # callback(0..1) — orb reactivity (9D)
+        self.emit_levels = False            # gated to the High animation tier
         self._thread = threading.Thread(target=self._worker, daemon=True,
                                         name="anna-tts")
         self._thread.start()
@@ -278,9 +280,58 @@ class SpeechOutput:
         winsound.PlaySound(str(wav_path),
                            winsound.SND_FILENAME | winsound.SND_ASYNC)
         self._mark_first_audio()
+        if self.emit_levels and self.on_audio_level:
+            self._play_with_levels(wav_path, duration)
+            return
         cancelled = self._cancel.wait(duration + 0.1)
         if cancelled:
             winsound.PlaySound(None, winsound.SND_PURGE)
+
+    def _play_with_levels(self, wav_path: Path, duration: float) -> None:
+        """Tick a coarse RMS envelope in sync with playback so the orb pulses
+        with Anna's actual voice amplitude (9D, High tier only)."""
+        import winsound
+        env = self._wav_envelope(wav_path)
+        start = time.monotonic()
+        tick = 0.08
+        while True:
+            elapsed = time.monotonic() - start
+            if elapsed >= duration:
+                break
+            if self._cancel.wait(tick):
+                winsound.PlaySound(None, winsound.SND_PURGE)
+                break
+            idx = min(len(env) - 1, int(elapsed / max(duration, 1e-3) * len(env)))
+            self._safe_level(env[idx] if env else 0.0)
+        self._safe_level(0.0)
+
+    def _wav_envelope(self, wav_path: Path, windows: int = None):
+        """RMS per ~80ms window, normalized to 0..1. Cheap: short sentences."""
+        try:
+            import numpy as np
+            with wave.open(str(wav_path), "rb") as wf:
+                rate = wf.getframerate() or 22050
+                frames = wf.readframes(wf.getnframes())
+            samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32)
+            if samples.size == 0:
+                return []
+            win = max(1, int(rate * 0.08))
+            n = int(np.ceil(samples.size / win))
+            env = []
+            for i in range(n):
+                chunk = samples[i * win:(i + 1) * win]
+                env.append(float(np.sqrt(np.mean(chunk ** 2))) if chunk.size else 0.0)
+            peak = max(env) or 1.0
+            return [min(1.0, v / peak) for v in env]
+        except Exception:
+            return []
+
+    def _safe_level(self, level: float) -> None:
+        if self.on_audio_level:
+            try:
+                self.on_audio_level(level)
+            except Exception:
+                pass
 
     def _speak_windows(self, text: str) -> None:
         escaped = text.replace("'", "''")

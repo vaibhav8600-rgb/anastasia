@@ -100,7 +100,32 @@ use any AI model; hybrid sends only transcribed/typed text + recent chat turns;
 local unless you enable the clipboard opt-in. If the cloud fails 3× in a row a
 circuit breaker routes everything local for 120s (no dead air), then probes.
 
-### 5. Run
+### 5. Streaming speech + hands-free conversation (optional)
+
+Local Whisper batches your audio and can take several seconds. **Streaming
+mode** (Deepgram) sends live mic audio while you talk and returns a final
+transcript ~0.3s after you stop, with a live interim transcript as you speak.
+
+1. Free key at https://console.deepgram.com → Settings → Voice input → set
+   **Speech recognition** to *streaming* + paste the key (or `DEEPGRAM_API_KEY`
+   env var). Local Whisper stays the automatic fallback if streaming fails.
+2. **Live-audio privacy:** while the mic is open in streaming mode, audio goes
+   to Deepgram — shown unmistakably by a **magenta mic ring + "streaming live
+   audio to Deepgram" badge**. The socket closes the instant the mic closes.
+   Local mode keeps all audio on-device. Files/screenshots never stream.
+3. **Streamed replies:** chat answers stream token-by-token — Anna starts
+   speaking sentence 1 while the brain writes sentence 2 (command planning
+   stays non-streamed and fully validated locally first).
+4. **Continuous conversation:** the bottom-bar **Conversation** toggle keeps
+   the mic open between turns — just talk, no button. Say "stop listening",
+   "that's all", "bye", tap the mic, or stay quiet 45s to end it. Half-duplex
+   (she never hears herself) and barge-in (talk over her) both hold.
+
+`turn_latency_ms` in Developer Tools measures "you stop speaking → Anna's
+first word". With streaming + Groq it's typically ~1–2s (the variable is the
+network round-trip to Groq; local warm-Piper TTS is ~0.25–0.5s).
+
+### 6. Run
 
 ```powershell
 python app\main.py            # the app
@@ -136,6 +161,9 @@ python app\main.py --doctor   # health check
 | Wake word warning | `pip install openwakeword`, then re-enable the toggle |
 | "Brain: Local (cloud offline)" chip | Groq failed 3× (no internet / bad key / rate limit); circuit routes local for 120s then auto-probes. Check the key in Settings → Cloud brain |
 | Slow spoken replies | The voice model warms once at startup; if replies still lag, confirm the Brain chip is green (Groq) and see `tts_first_audio_ms` in Developer Tools |
+| Magenta mic ring / "streaming" badge | Normal in streaming mode — it means live mic audio is going to Deepgram. Switch Speech recognition to *local* to keep audio on-device |
+| Streaming stopped working | Deepgram failed 3× → the STT circuit routes to local Whisper for 120s, then auto-probes. Anna keeps working on local Whisper meanwhile |
+| Mic stays on between replies | Continuous Conversation mode is on. Say "stop listening", tap the mic, or toggle Conversation off |
 
 ## Development
 

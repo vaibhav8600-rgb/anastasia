@@ -12,6 +12,7 @@ Technical/diagnostic output goes to the devlog, not the chat.
 import sys
 import tempfile
 import threading
+import time
 import re
 from pathlib import Path
 
@@ -66,6 +67,8 @@ class Controller:
         self._hands_free_active = False    # continuous conversation loop (9C)
         self._garble_streak = 0
         self._idle_timer = None
+        self._turn_t0 = None               # turn_latency_ms anchor (9D)
+        self._last_turn_stt_ms = 0.0
 
         if ui is None:
             raise ValueError("Controller requires a ui (UIBridge or test fake).")
@@ -82,6 +85,9 @@ class Controller:
         self.speech.on_tts_health_change = self._on_brain_state
         # reply-ready -> first audible sample telemetry (8D)
         self.speech.on_first_audio = self._on_first_audio
+        # audio-reactive orb (9D): envelope levels, gated to the High tier
+        self.speech.on_audio_level = self._on_audio_level
+        self.speech.emit_levels = (self.config.animation_quality == "high")
         # recent chat turns for conversational continuity (8D)
         self.agent.recent_chat_turns = self._recent_chat_turns
 
@@ -373,6 +379,19 @@ class Controller:
     def _on_first_audio(self, ms: float) -> None:
         self.last_tts_first_audio_ms = ms
         devlog.log(f"tts_first_audio_ms: {ms:.0f}ms (reply ready -> first sound)")
+        # Consolidated conversational metric (9D): "I stop speaking" -> "Anna's
+        # first audible word" = the number that proves the Mira feel.
+        if self._turn_t0 is not None:
+            turn_ms = (time.perf_counter() - self._turn_t0) * 1000
+            self._turn_t0 = None
+            brain = getattr(self.agent, "brain", None)
+            first_tok = getattr(getattr(brain, "last", None), "first_token_ms", 0) or 0
+            stt = self._last_turn_stt_ms
+            devlog.log(f"turn_latency_ms: {turn_ms:.0f}ms  "
+                       f"(stt_final~{stt:.0f} + route+llm_first_token~{first_tok:.0f} "
+                       f"+ tts_first_audio~{ms:.0f})")
+            if hasattr(self.ui, "dispatch"):
+                self.ui.dispatch("turn_latency", {"ms": round(turn_ms)})
 
     def _recent_chat_turns(self, max_turns: int) -> list:
         """Prior user/assistant turns for chat context (8D). Maps the
@@ -587,8 +606,19 @@ class Controller:
             self.show_info("I didn't catch that clearly. Try once more?")
             self.set_state("ready")
             return
+        self._start_turn_clock(result.stt_ms)
         self.pipeline.submit(result.text, source=self._record_source,
                              confidence=result.confidence, stt_ms=result.stt_ms)
+
+    def _start_turn_clock(self, stt_ms: float) -> None:
+        """Anchor turn_latency_ms at transcript-ready for voice turns (9D)."""
+        self._turn_t0 = time.perf_counter()
+        self._last_turn_stt_ms = stt_ms or 0.0
+
+    def _on_audio_level(self, level: float) -> None:
+        """Forward the TTS amplitude envelope to the orb (High tier only)."""
+        if hasattr(self.ui, "dispatch"):
+            self.ui.dispatch("speaking_level", {"level": round(level, 3)})
 
     def _on_stt_error(self, result) -> None:
         gen = self._stream_generation
@@ -630,6 +660,7 @@ class Controller:
             self.show_info("I didn't catch that clearly. Try once more?")
             self.set_state("ready")
             return
+        self._start_turn_clock(result.stt_ms)
         self.pipeline.submit(result.text, source=self._record_source,
                              confidence=result.confidence, stt_ms=result.stt_ms)
 
@@ -906,6 +937,7 @@ class Controller:
             self.config.save()
             devlog.log(f"Settings changed: {', '.join(changed)}")
             self.show_info("Settings saved.")
+            self.speech.emit_levels = (self.config.animation_quality == "high")
             if hasattr(self.ui, "dispatch"):
                 self.ui.dispatch("prefs", {
                     "animation_quality": self.config.animation_quality})

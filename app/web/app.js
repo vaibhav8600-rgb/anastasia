@@ -143,6 +143,7 @@ function setChips(chips) {
 let animQuality = "medium";
 let avatarLoaded = false;
 let avatarRAF = 0, haloRAF = 0;
+let annaLevel = 0, annaLevelTarget = 0;   // TTS amplitude -> orb reactivity (9D)
 
 function setAnimQuality(quality) {
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -183,6 +184,11 @@ function startAvatarSphere() {
   let angle = 0;
   (function frame() {
     angle += 0.004;
+    // ease the orb toward the live audio level; decays to rest in pauses
+    annaLevel += (annaLevelTarget - annaLevel) * 0.25;
+    annaLevelTarget *= 0.9;
+    const pulse = 1 + annaLevel * 0.22;        // expand with voice amplitude
+    const glow = annaLevel * 0.35;             // brighten with voice amplitude
     const sin = Math.sin(angle), cos = Math.cos(angle);
     ctx.clearRect(0, 0, size, size);
     for (let i = 0; i < N; i++) {
@@ -190,11 +196,11 @@ function startAvatarSphere() {
       const x = p.x * cos - p.z * sin;
       const z = p.x * sin + p.z * cos;
       const depth = (z + 1) / 2;          // 0 back .. 1 front
-      const px = C + x * R * (0.85 + depth * 0.15);
-      const py = C + p.y * R * 0.92 + Math.sin(angle * 2 + i) * 1.2;
+      const px = C + x * R * pulse * (0.85 + depth * 0.15);
+      const py = C + p.y * R * pulse * 0.92 + Math.sin(angle * 2 + i) * 1.2;
       ctx.beginPath();
       ctx.arc(px, py, 0.6 + depth * 1.5, 0, 6.2832);
-      ctx.fillStyle = `rgba(${colors[i % colors.length]},${0.12 + depth * 0.55})`;
+      ctx.fillStyle = `rgba(${colors[i % colors.length]},${Math.min(1, 0.12 + depth * 0.55 + glow)})`;
       ctx.fill();
     }
     avatarRAF = requestAnimationFrame(frame);
@@ -533,6 +539,10 @@ const handlers = {
     const toggle = $("#toggle-hands-free");
     if (toggle) toggle.checked = on;
   },
+
+  // Audio-reactive orb (9D): TTS amplitude envelope pulses the sphere.
+  speaking_level: (p) => { annaLevelTarget = Math.max(annaLevelTarget, (p && p.level) || 0); },
+  turn_latency: () => {},   // consolidated metric lives in Developer Tools
 
   prefs: (p) => setAnimQuality(p.animation_quality),
 

@@ -1,5 +1,23 @@
 # HANDOFF — Anastasia (Anna) overhaul
 
+> **Phase 9 COMPLETE (9A-9D). 238 tests passing.** 9D: turn_latency_ms
+> consolidated telemetry — controller._start_turn_clock(stt_ms) sets _turn_t0
+> before every VOICE pipeline.submit (both _on_stt_final streaming +
+> _finish_recording local); _on_first_audio computes turn_latency_ms
+> (transcript-ready -> first audible word) + logs breakdown + dispatches
+> turn_latency event. Audio-reactive orb: SpeechOutput._wav_envelope (RMS per
+> 80ms window, peak-normalized) + _play_with_levels ticks the envelope in sync
+> with winsound playback -> on_audio_level(0..1); controller._on_audio_level
+> -> speaking_level event; app.js annaLevel eases the particle sphere pulse +
+> glow. Gated: speech.emit_levels = (animation_quality=='high'), updated on
+> save_settings. NOTE: main.py now has top-level `import time`. Live measured:
+> transcript->first-word ~1.0-2.1s (Groq RTT from India is the variable, 576-
+> 1253ms; warm-Piper TTS 250-500ms; Deepgram stt_final ~300ms est). Honest:
+> sometimes exceeds the 1.5s target when Groq RTT is high — network-bound, not
+> fixable locally. config: hands_free/idle_timeout, stt_mode/deepgram_*.
+> Phase 9 fully done; user still needs a Deepgram key for live streaming STT.
+
+
 > **Phase 9C (continuous hands-free) DONE.** Replaced the 8D one-shot 6s
 > follow-up with a true loop. config: hands_free (persists), 
 > hands_free_idle_timeout_s (45). Controller: start_hands_free/stop_hands_free
