@@ -373,6 +373,21 @@ body.stt-streaming #mic-btn.recording::before {
                      white-space: nowrap; color: var(--text-mid); }
 .result-card button { margin-left: auto; }
 
+/* screenshot preview card (9.1D) */
+.shot-card { flex-direction: column; align-items: stretch; gap: 8px; }
+.shot-card .shot-head { display: flex; align-items: center; gap: 10px; }
+.shot-card .shot-head .grow { white-space: normal; }
+.shot-thumb {
+  width: 100%; max-width: 320px; border-radius: 8px; cursor: pointer;
+  border: 1px solid rgba(52, 211, 153, .25); display: block;
+}
+.shot-thumb-none {
+  height: 60px; display: grid; place-items: center; cursor: default;
+  color: var(--text-mid); background: rgba(0,0,0,.25); font-size: 11px;
+}
+.shot-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.shot-actions button { margin-left: 0; }
+
 .confirm-card {
   background: rgba(60, 45, 12, .45);
   border: 1px solid rgba(251, 191, 36, .5);

@@ -16,7 +16,7 @@
   "stt_mode": "local",
   "deepgram_api_key": "",
   "deepgram_model": "nova-2",
-  "tts_deepgram_model": "aura-2-luna-en",
+  "tts_deepgram_model": "aura-2-delia-en",
   "ollama_timeout": 20,
   "ollama_keep_alive": "30m",
   "ollama_num_predict": 220,

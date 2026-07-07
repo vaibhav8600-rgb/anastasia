@@ -41,7 +41,7 @@ def test_deepgram_tts_streams_pcm_chunks(monkeypatch, tmp_path):
     with wave.open(str(wav), "rb") as wf:
         assert wf.getframerate() == 16000 and wf.getnframes() > 0
     assert captured["params"]["encoding"] == "linear16"
-    assert captured["params"]["model"] == "aura-2-luna-en"
+    assert captured["params"]["model"] == "aura-2-delia-en"
     assert captured["auth"] == "Token dg_TESTKEY1234567890"
     assert captured["text"] == "Hello there."
 

@@ -849,24 +849,104 @@ class Controller:
             "prefs": {"animation_quality": self.config.animation_quality},
         })
 
-    def open_path(self, path: str) -> None:
-        """js_api: open a file/folder Anna produced (View buttons). Only
-        paths inside the screenshot dir or safe folders are allowed."""
-        import os
+    def _allowed_path(self, path: str):
+        """Return a resolved Path if it's inside the screenshot dir or a safe
+        folder, else None (the whitelist for all file actions)."""
         from pathlib import Path as P
-        target = P(path)
+        target = P(path or "")
         if not path or not target.exists():
-            return
+            return None
         roots = [P(self.config.screenshot_dir)] + \
                 [P(f) for f in self.config.safe_folders]
         for root in roots:
             try:
                 if target.resolve().is_relative_to(root.resolve()):
-                    os.startfile(str(target))  # noqa: S606 — whitelisted roots
-                    return
+                    return target
             except (OSError, ValueError):
                 continue
-        devlog.warn(f"open_path refused (outside allowed roots): {path}")
+        return None
+
+    def open_path(self, path: str) -> None:
+        """js_api: open a file Anna produced (View button)."""
+        import os
+        target = self._allowed_path(path)
+        if target is None:
+            devlog.warn(f"open_path refused (outside allowed roots): {path}")
+            return
+        os.startfile(str(target))  # noqa: S606 — whitelisted roots
+
+    def reveal_path(self, path: str) -> None:
+        """js_api: reveal a file in Explorer (Open folder button)."""
+        import subprocess
+        target = self._allowed_path(path)
+        if target is None:
+            devlog.warn(f"reveal_path refused: {path}")
+            return
+        subprocess.Popen(["explorer", "/select,", str(target)])
+
+    def copy_image(self, path: str) -> None:
+        """js_api: copy an image file to the Windows clipboard (Copy button)."""
+        target = self._allowed_path(path)
+        if target is None:
+            devlog.warn(f"copy_image refused: {path}")
+            return
+        def worker():
+            try:
+                import io
+                from PIL import Image
+                with Image.open(str(target)) as img:
+                    out = io.BytesIO()
+                    img.convert("RGB").save(out, "BMP")
+                    dib = out.getvalue()[14:]   # strip 14-byte BMP header -> DIB
+                import ctypes
+                CF_DIB = 8
+                u = ctypes.windll.user32; k = ctypes.windll.kernel32
+                if not u.OpenClipboard(0):
+                    return
+                try:
+                    u.EmptyClipboard()
+                    h = k.GlobalAlloc(0x2000, len(dib))   # GMEM_DDESHARE
+                    p = k.GlobalLock(h)
+                    ctypes.memmove(p, dib, len(dib))
+                    k.GlobalUnlock(h)
+                    u.SetClipboardData(CF_DIB, h)
+                finally:
+                    u.CloseClipboard()
+                self.show_info("Screenshot copied to clipboard.")
+            except Exception as e:
+                devlog.warn(f"copy_image failed: {' '.join(str(e).split())[:150]}")
+        threading.Thread(target=worker, daemon=True).start()
+
+    def save_image_as(self, path: str) -> None:
+        """js_api: native Save-As dialog to copy the screenshot elsewhere."""
+        target = self._allowed_path(path)
+        if target is None:
+            devlog.warn(f"save_image_as refused: {path}")
+            return
+        def worker():
+            try:
+                dest = self._native_save_dialog(target.name)
+                if dest:
+                    import shutil
+                    shutil.copy2(str(target), dest)
+                    devlog.log(f"Screenshot saved to {dest}")
+            except Exception as e:
+                devlog.warn(f"save_image_as failed: {' '.join(str(e).split())[:150]}")
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _native_save_dialog(self, default_name: str) -> str:
+        """Windows Save-As dialog via the webview if available, else None."""
+        try:
+            import webview
+            windows = getattr(webview, "windows", None)
+            if windows:
+                result = windows[0].create_file_dialog(
+                    webview.SAVE_DIALOG, save_filename=default_name)
+                if result:
+                    return result if isinstance(result, str) else result[0]
+        except Exception as e:
+            devlog.warn(f"save dialog unavailable: {e}")
+        return ""
 
     def open_settings(self) -> None:
         """js_api: send current settings to the frontend modal."""
@@ -943,7 +1023,8 @@ class Controller:
         "animation_quality": {"low", "medium", "high"},
         "tts_backend": {"auto", "piper", "kokoro", "deepgram", "windows", "off"},
         "kokoro_voice": {"af_heart", "af_bella"},
-        "tts_deepgram_model": {"aura-2-luna-en", "aura-asteria-en", "aura-luna-en"},
+        "tts_deepgram_model": {"aura-2-delia-en", "aura-2-luna-en",
+                               "aura-asteria-en", "aura-luna-en"},
         "faster_whisper_model": {"tiny", "base", "base.en", "small", "small.en"},
         "stt_language": {"auto", "en", "hi", "mr"},
         "brain_mode": {"hybrid", "local_only"},

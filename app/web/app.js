@@ -75,11 +75,33 @@ function annaMessageHtml(p) {
 function resultCardHtml(action) {
   if (!action) return "";
   const data = action.data;
-  const viewable = typeof data === "string" && data.length > 0;
+  // Screenshot: structured payload with an inline thumbnail + actions (9.1D).
+  if (data && typeof data === "object" && data.type === "screenshot") {
+    const p = esc(data.full_path || "");
+    const thumb = data.thumb_data_url
+      ? `<img class="shot-thumb" src="${esc(data.thumb_data_url)}" alt="screenshot"
+             data-open-path="${p}">`
+      : `<div class="shot-thumb shot-thumb-none">no preview</div>`;
+    return `<div class="result-card shot-card">
+              <div class="shot-head"><span class="ok">✅</span>
+                <span class="grow">Screenshot · ${esc(data.timestamp || "")}</span></div>
+              ${thumb}
+              <div class="shot-actions">
+                <button class="ghost-btn" data-open-path="${p}">View ↗</button>
+                <button class="ghost-btn" data-copy-img="${p}">Copy</button>
+                <button class="ghost-btn" data-save-img="${p}">Save as…</button>
+                <button class="ghost-btn" data-reveal="${p}">Open folder</button>
+              </div>
+            </div>`;
+  }
+  // Generic result with an openable path (older payloads used a plain string).
+  const pathStr = typeof data === "string" ? data
+    : (data && typeof data === "object" ? data.full_path : "");
+  const viewable = typeof pathStr === "string" && pathStr.length > 0;
   return `<div class="result-card">
             <span class="ok">✅</span>
-            <span class="grow">${viewable ? esc(data) : esc(action.intent || "done")}</span>
-            ${viewable ? `<button class="ghost-btn" data-open-path="${esc(data)}">View ↗</button>` : ""}
+            <span class="grow">${viewable ? esc(pathStr) : esc(action.intent || "done")}</span>
+            ${viewable ? `<button class="ghost-btn" data-open-path="${esc(pathStr)}">View ↗</button>` : ""}
           </div>`;
 }
 
@@ -420,8 +442,8 @@ function settingsHtml(s) {
       <p class="settings-hint">Uses your Deepgram key (same one as streaming
         speech). Sends Anna's reply text to Deepgram; nothing else.</p>
       <div class="form-row"><label>Aura voice</label>
-        ${selectHtml("tts_deepgram_model", s.tts_deepgram_model || "aura-2-luna-en",
-          ["aura-2-luna-en", "aura-asteria-en", "aura-luna-en"])}</div>
+        ${selectHtml("tts_deepgram_model", s.tts_deepgram_model || "aura-2-delia-en",
+          ["aura-2-delia-en", "aura-2-luna-en", "aura-asteria-en", "aura-luna-en"])}</div>
       <button class="ghost-btn" id="validate-deepgram-tts">Validate Deepgram voice</button>
     </div>
 
@@ -753,7 +775,13 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     const viewBtn = e.target.closest("[data-open-path]");
-    if (viewBtn) call("open_path", viewBtn.dataset.openPath);
+    if (viewBtn) { call("open_path", viewBtn.dataset.openPath); return; }
+    const copyBtn = e.target.closest("[data-copy-img]");
+    if (copyBtn) { call("copy_image", copyBtn.dataset.copyImg); return; }
+    const saveBtn = e.target.closest("[data-save-img]");
+    if (saveBtn) { call("save_image_as", saveBtn.dataset.saveImg); return; }
+    const revealBtn = e.target.closest("[data-reveal]");
+    if (revealBtn) { call("reveal_path", revealBtn.dataset.reveal); return; }
   });
 
   document.addEventListener("keydown", (e) => {

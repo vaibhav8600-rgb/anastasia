@@ -16,7 +16,7 @@ import requests
 from app.voice.stt_providers import deepgram_key
 
 AURA_URL = "https://api.deepgram.com/v1/speak"
-AURA_MODELS = ("aura-2-luna-en", "aura-asteria-en", "aura-luna-en")
+AURA_MODELS = ("aura-2-delia-en", "aura-2-luna-en", "aura-asteria-en", "aura-luna-en")
 _SAMPLE_RATE = 16000
 
 

@@ -215,5 +215,14 @@ class JsApi:
     def open_path(self, path) -> None:
         self._controller.open_path(str(path or ""))
 
+    def reveal_path(self, path) -> None:
+        self._controller.reveal_path(str(path or ""))
+
+    def copy_image(self, path) -> None:
+        self._controller.copy_image(str(path or ""))
+
+    def save_image_as(self, path) -> None:
+        self._controller.save_image_as(str(path or ""))
+
     def clear_history(self) -> None:
         self._controller.clear_history()

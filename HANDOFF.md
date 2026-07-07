@@ -1,5 +1,19 @@
 # HANDOFF — Anastasia (Anna) overhaul
 
+> **Phase 9.1 COMPLETE (9.1A-9.1D). 268 tests.** Aura default voice =
+> aura-2-delia-en (user choice). 9.1D screenshot thumbnails: screenshot.py
+> returns data={"type":"screenshot","full_path","thumb_data_url"(<=320px JPEG,
+> off-thread via _make_thumbnail with THUMB_BUDGET_S=0.5 cap -> None if slow),
+> "timestamp"}. Frontend resultCardHtml renders .shot-card: inline <img
+> thumb> + View/Copy/Save-as/Open-folder buttons -> js_api open_path/copy_image
+> (CF_DIB clipboard via ctypes)/save_image_as (webview SAVE_DIALOG)/reveal_path
+> (explorer /select). Controller._allowed_path whitelists screenshot_dir +
+> safe_folders for ALL file actions. Full PNG never inlined (only the small
+> thumb data URL, session-only); SCREENSHOT stays NEVER_CLOUD and no code path
+> puts result.data into any provider request (test-enforced). Spelling: app is
+> correctly "Anastasia" everywhere (no misspellings found). Phase 9.1 done.
+
+
 > **Phase 9.1C DONE (Deepgram Aura TTS).** app/voice/tts_deepgram.py:
 > synthesize_deepgram (Aura REST, linear16 16kHz PCM -> WAV), validate_
 > deepgram_tts, deepgram_tts_available/status; reuses deepgram_key. config

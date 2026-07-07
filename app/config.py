@@ -122,7 +122,7 @@ class AppConfig(BaseModel):
     tts_backend: str = "auto"            # auto | piper | kokoro | deepgram | windows | off
     # Deepgram Aura (cloud streaming voice). Reuses deepgram_api_key. Sends
     # Anna's REPLY TEXT to Deepgram to synthesize; Piper/SAPI stay fully local.
-    tts_deepgram_model: str = "aura-2-luna-en"
+    tts_deepgram_model: str = "aura-2-delia-en"
     piper_exe: str = ""                  # optional path to piper.exe fallback
     piper_voice: str = ""                # path to .onnx voice model
     piper_length_scale: float = 1.08      # >1 is a slightly more relaxed pace
