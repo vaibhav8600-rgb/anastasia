@@ -1,16 +1,27 @@
 # HANDOFF — Anastasia (Anna) overhaul
 
-> **Phase 8A (hybrid brain) DONE, awaiting approval + user's Groq key for
-> live latency numbers.** New: app/llm/providers.py (GroqProvider,
-> OllamaProvider getter-based, BrainRouter: hybrid→Groq 8s→Ollama 15s capped
-> fallback→BrainUnavailable honest message; circuit 3 fails→open 120s→probe).
-> Agent.plan_llm/plan_chat go through brain.complete(kind); trace gains
-> provider/failover; Brain chip (Groq green / local blue / cloud-offline
-> amber) + popover (js_api.get_brain_info); Cloud brain settings section,
-> key masked gsk_...last4, never logged/dispatched (test-enforced), env
-> GROQ_API_KEY wins. Config: brain_mode/groq_api_key/cloud_model/
-> cloud_timeout_s. 174 tests. Next: 8B piper binary fix, 8C privacy tiers,
-> 8D latency polish (see Phase 8 prompt in session).
+> **Phase 8 status: 8A + 8B DONE (approved/live), 8C in progress, 8D next.**
+> 8A hybrid brain: app/llm/providers.py — GroqProvider (OpenAI-compat,
+> json_object mode, typed errors), OllamaProvider (getter-based), BrainRouter
+> (hybrid→Groq 8s→Ollama 15s capped fallback→BrainUnavailable honest msg;
+> circuit: 3 fails→open 120s→probe). plan_llm/plan_chat use
+> brain.complete(kind); trace has provider/failover; Brain chip + popover;
+> cloud settings w/ masked key (never logged/dispatched, test-enforced;
+> env GROQ_API_KEY wins). **Live measured: chat 637ms, complex command
+> 758ms via Groq (was 9-22s/timeout local).** User's key is in
+> app/data/config.json (gitignored).
+> 8B piper fix: pip-entry-point paths (venv/Scripts) rejected w/ specific
+> message; venv fallback resolution deleted; 10s synth probe at validation
+> + startup; TTS circuit breaker (2 fails→bench for session, ONE warning,
+> chip 'Voice: Windows fallback (Piper error)', Validate Piper restores);
+> errors truncated 200 chars, full tracebacks → app/data/tts_errors.log.
+> Mute-fix: piper/kokoro selected-but-unconfigured now falls back to SAPI
+> with one warning (was silent + per-sentence spam). User still needs to
+> install the piper binary (piper_windows_amd64.zip) and re-point piper_exe.
+> Tests: 180 passing; save_settings no longer spawns health threads in
+> tests (_background_checks guard). 8C scope: privacy tiers (DataClass
+> enum, provider hard gate, clipboard opt-in, private_ memory keys,
+> Privacy settings section). 8D: streaming/latency polish + acceptance.
 
 > Continuation file for any agent picking up this project mid-flight.
 > Last update: **2026-07-05, end of Phase 6 — ALL SIX PHASES COMPLETE.**

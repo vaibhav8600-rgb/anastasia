@@ -8,3 +8,4 @@ app/data/config.json
 app/data/memory.json
 *.wav
 app/data/voices/
+.claude/settings.local.json*

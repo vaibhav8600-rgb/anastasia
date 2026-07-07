@@ -56,6 +56,32 @@ def test_piper_probe_requires_nonempty_wav(monkeypatch, tmp_path):
     assert not ok and "empty" in message.lower()
 
 
+def test_piper_selected_but_unconfigured_falls_back_with_one_warning(
+        tmp_path, monkeypatch):
+    """Anna must never go mute: explicit piper backend + broken setup ->
+    Windows voice, single warning (was: silent + per-sentence spam)."""
+    devlog.clear()
+    devlog.echo_to_stdout = False
+    try:
+        config = make_config(tts_backend="piper",
+                             piper_exe=r"F:\x\.venv\Scripts\piper.exe",
+                             piper_voice="C:/v/amy.onnx")
+        monkeypatch.setattr("app.voice.speech_output.TTS_ERROR_LOG",
+                            tmp_path / "tts.log")
+        speech = SpeechOutput(config)
+        speech.shutdown()
+        spoken = []
+        speech._speak_windows = spoken.append
+        for _ in range(3):
+            speech._speak("hello")
+        assert spoken == ["hello"] * 3          # still speaks, via SAPI
+        warnings = [e for e in devlog.entries(50)
+                    if "setup is incomplete" in e["message"]]
+        assert len(warnings) == 1               # once per session, not per line
+    finally:
+        devlog.echo_to_stdout = True
+
+
 # ---- 8B.2 circuit breaker -----------------------------------------------------
 
 def test_tts_circuit_opens_after_2_failures_single_warning(tmp_path, monkeypatch):

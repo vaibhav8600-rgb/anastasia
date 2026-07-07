@@ -50,6 +50,7 @@ class SpeechOutput:
         self._proc_lock = threading.Lock()
         self.piper_unhealthy = False        # TTS circuit breaker (session)
         self._piper_failures = 0
+        self._setup_warned = set()          # one unconfigured-warning per backend
         self.on_tts_health_change = None    # callback() — chip refresh
         self._thread = threading.Thread(target=self._worker, daemon=True,
                                         name="anna-tts")
@@ -154,6 +155,7 @@ class SpeechOutput:
 
     def reset_piper_circuit(self) -> None:
         """Called after a successful re-probe (Validate Piper button)."""
+        self._setup_warned.discard("piper")
         if self.piper_unhealthy or self._piper_failures:
             self._piper_failures = 0
             self.piper_unhealthy = False
@@ -184,7 +186,12 @@ class SpeechOutput:
         if backend == "piper":
             from app.voice.tts_piper import piper_available
             if not piper_available(self.config):
-                devlog.warn("Piper selected but setup is incomplete — staying silent.")
+                if "piper" not in self._setup_warned:
+                    self._setup_warned.add("piper")
+                    devlog.warn("Piper selected but setup is incomplete — "
+                                "using the Windows voice until it validates "
+                                "(Settings → Voice output).")
+                self._speak_windows(text)
                 return
             if self.piper_unhealthy:
                 self._speak_windows(text)
@@ -200,7 +207,12 @@ class SpeechOutput:
         if backend == "kokoro":
             from app.voice.tts_kokoro import kokoro_available
             if not kokoro_available(self.config):
-                devlog.warn("Kokoro selected but setup is incomplete — staying silent.")
+                if "kokoro" not in self._setup_warned:
+                    self._setup_warned.add("kokoro")
+                    devlog.warn("Kokoro selected but setup is incomplete — "
+                                "using the Windows voice until it validates "
+                                "(Settings → Voice output).")
+                self._speak_windows(text)
                 return
             try:
                 self._speak_kokoro(text)

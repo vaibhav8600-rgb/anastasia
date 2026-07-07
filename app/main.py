@@ -196,10 +196,16 @@ class Controller:
         if not self._mic_ok:
             devlog.warn("No microphone detected.")
             issues.append("No microphone found — voice input is disabled, but typing works.")
-        from app.voice.tts_piper import piper_available, validate_piper_config
+        from app.voice.tts_piper import (piper_available, piper_setup_status,
+                                         validate_piper_config)
         self._piper_ok = piper_available(self.config)
         if not self._piper_ok:
-            devlog.warn("Piper voice not configured — using the built-in Windows voice.")
+            _, piper_reason = piper_setup_status(self.config)
+            devlog.warn(f"Piper unavailable: {piper_reason}")
+            if self.config.tts_backend == "piper":
+                # Explicitly selected but broken -> surface it, don't go mute.
+                issues.append(f"Your selected voice (Piper) isn't working — "
+                              f"using the Windows voice meanwhile. {piper_reason}")
         elif self.config.tts_backend in ("auto", "piper"):
             # Startup probe (spec 8B.1): only a real synthesized WAV counts.
             probe_ok, probe_msg = validate_piper_config(self.config, play=False)
@@ -613,7 +619,8 @@ class Controller:
             from app.voice.tts_piper import piper_available
             if self.config.tts_backend == "piper" and not piper_available(self.config):
                 self.show_info("Piper is selected but not fully configured — "
-                               "I'll stay silent until the exe and voice paths are set.")
+                               "I'll use the Windows voice until the exe and "
+                               "voice paths are set.")
             from app.voice.tts_kokoro import kokoro_available
             if self.config.tts_backend == "kokoro" and not kokoro_available(self.config):
                 self.show_info("Kokoro is selected but its package or model files "
