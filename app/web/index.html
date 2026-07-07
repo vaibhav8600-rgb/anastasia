@@ -98,6 +98,7 @@
 
   <div id="state-word">Ready</div>
   <div id="state-sub">You can speak now or type a command.</div>
+  <div id="hands-free-badge" class="hidden">◉ conversation mode — just talk, I'm listening</div>
   <div id="stt-streaming-badge" class="hidden">● streaming live audio to Deepgram</div>
   <div id="stt-interim"></div>
 </main>
@@ -124,6 +125,10 @@
       <div class="toggle-card">
         <div><div class="toggle-title">Voice replies</div><div class="toggle-sub">Spoken responses</div></div>
         <label class="switch"><input type="checkbox" id="toggle-voice"><span class="slider"></span></label>
+      </div>
+      <div class="toggle-card">
+        <div><div class="toggle-title">Conversation</div><div class="toggle-sub">Continuous hands-free</div></div>
+        <label class="switch"><input type="checkbox" id="toggle-hands-free"><span class="slider"></span></label>
       </div>
     </div>
     <div class="btn-row">

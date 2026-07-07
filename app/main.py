@@ -61,8 +61,11 @@ class Controller:
         self._low_mic_warned = False
         self.last_state = "ready"          # for full_state re-hydration
         self.chips = {}                    # top-bar status chips
-        self._followup_armed = False       # hands-free follow-up (8D)
+        self._followup_armed = False       # hands-free follow-up (8D, legacy)
         self.last_tts_first_audio_ms = 0.0
+        self._hands_free_active = False    # continuous conversation loop (9C)
+        self._garble_streak = 0
+        self._idle_timer = None
 
         if ui is None:
             raise ValueError("Controller requires a ui (UIBridge or test fake).")
@@ -88,6 +91,8 @@ class Controller:
             threading.Thread(target=self._warm_imports, daemon=True).start()
             if self.config.wake_word_enabled:
                 self.ui.after(500, self.toggle_wake_word_on)
+            if self.config.hands_free:   # continuous mode persisted across restart
+                self.ui.after(1500, lambda: self.start_hands_free(persist=False))
 
     # -------------------------------------------------- pipeline UI glue
     def _ui(self, fn, *args) -> None:
@@ -135,28 +140,127 @@ class Controller:
         if active:
             self.set_state("speaking")
         elif not self.pipeline.is_processing_command and self.pipeline.pending is None:
-            self.set_state("ready")
-            if self._followup_armed:
-                self._followup_armed = False
-                self._start_followup_listen()
+            if self._hands_free_active:
+                # Continuous loop: the instant Anna finishes, reopen the mic.
+                self._hands_free_continue()
+            else:
+                self.set_state("ready")
 
     def arm_followup(self) -> None:
-        """Pipeline hook: after a spoken chat reply, arm a hands-free
-        follow-up (only if enabled). Fires when speech finishes."""
-        if getattr(self.config, "hands_free_followup", False):
-            self._followup_armed = True
+        """Pipeline hook (kept for compatibility). Continuous hands-free (9C)
+        reopens the mic from _on_speaking_changed, so this is a no-op now."""
+        return
 
-    def _start_followup_listen(self) -> None:
-        """Reopen the mic without PTT for one follow-up (half-duplex still
-        applies; silence auto-stop closes it)."""
+    # ----------------------------------------------- continuous hands-free (9C)
+    STOP_PHRASES = ("stop listening", "stop the conversation", "that's all",
+                    "thats all", "that is all", "goodbye anna", "goodbye",
+                    "bye anna", "bye", "go to sleep", "nevermind")
+
+    def _is_stop_phrase(self, text: str) -> bool:
+        t = (text or "").lower().strip(" .!?,")
+        return t in self.STOP_PHRASES
+
+    def start_hands_free(self, persist: bool = True) -> None:
+        """Enter the continuous conversation loop: mic reopens after every
+        turn until a stop phrase / mic tap / idle timeout."""
+        if persist and not self.config.hands_free:
+            self.config.hands_free = True
+            self.config.save()
+        if self._hands_free_active:
+            return
+        self._hands_free_active = True
+        self._garble_streak = 0
+        devlog.log("Hands-free conversation started.")
+        self._emit_hands_free(True)
+        self._reset_idle_timer()
+        self._hands_free_continue()
+
+    def stop_hands_free(self, reason: str = "", signoff: bool = True,
+                        persist: bool = True) -> None:
+        if not self._hands_free_active:
+            if persist and self.config.hands_free:
+                self.config.hands_free = False
+                self.config.save()
+            return
+        self._hands_free_active = False
+        if self._idle_timer is not None:
+            self._idle_timer.cancel()
+            self._idle_timer = None
+        if persist and self.config.hands_free:
+            self.config.hands_free = False
+            self.config.save()
+        devlog.log(f"Hands-free conversation ended ({reason}).")
+        self._emit_hands_free(False)
+        if self.recorder.recording or self._active_stream is not None:
+            self.cancel_recording()
+        if signoff:
+            self.speech.speak_async("I'll be right here when you need me.")
+        self.set_state("ready")
+
+    def _hands_free_continue(self) -> None:
+        """Reopen the mic for the next turn if the loop is still active."""
+        if not self._hands_free_active:
+            return
+
         def worker():
             import time as _t
-            _t.sleep(0.15)   # let the gate's echo tail clear first
-            if self.recorder.recording or self.pipeline.is_processing_command:
+            from app.voice import audio_gate
+            _t.sleep(audio_gate.TAIL_SECONDS + 0.1)  # let echo tail clear
+            if not self._hands_free_active:
                 return
-            devlog.log("Hands-free: listening for a follow-up.")
+            if self.recorder.recording or self.pipeline.is_processing_command \
+                    or self.speech.speaking or self.pipeline.pending is not None:
+                return
             self._ui(lambda: self.toggle_mic("voice"))
         threading.Thread(target=worker, daemon=True).start()
+
+    def _reset_idle_timer(self) -> None:
+        """(Re)start the total-silence timeout; a real turn resets it."""
+        if self._idle_timer is not None:
+            self._idle_timer.cancel()
+        timeout = float(getattr(self.config, "hands_free_idle_timeout_s", 45.0))
+        self._idle_timer = threading.Timer(timeout, self._on_idle_timeout)
+        self._idle_timer.daemon = True
+        self._idle_timer.start()
+
+    def _on_idle_timeout(self) -> None:
+        if self._hands_free_active:
+            self.stop_hands_free("idle timeout", signoff=True)
+
+    def _hands_free_handle_final(self, text: str, confidence: float = 1.0) -> bool:
+        """Loop-specific handling of a transcript before routing. Returns True
+        if the pipeline should NOT process it (handled here: stop phrase,
+        empty/garble). Only meaningful while the loop is active."""
+        if not self._hands_free_active:
+            return False
+        from app.agent.normalizer import normalize_command
+        cleaned = normalize_command(text, self.config).cleaned
+        if cleaned and self._is_stop_phrase(cleaned):
+            self.show_user(cleaned)
+            self.stop_hands_free("you asked me to stop", signoff=True)
+            return True
+        is_garble = (not cleaned) or (confidence < 0.4)
+        if is_garble:
+            # Don't count as a turn, don't nag every silence — just keep
+            # listening. After 3 in a row, check in once.
+            self._garble_streak += 1
+            devlog.log(f"Hands-free: ignored empty/low-confidence final "
+                       f"(streak {self._garble_streak}).")
+            speaks = self.config.voice_enabled and self.config.tts_backend != "off"
+            if self._garble_streak == 3 and speaks:
+                # check in once; the speech-finished hook reopens the mic
+                self.speech.speak_async(
+                    "I'm having trouble hearing you — still there?")
+            else:
+                self._hands_free_continue()
+            return True
+        self._garble_streak = 0
+        self._reset_idle_timer()
+        return False
+
+    def _emit_hands_free(self, active: bool) -> None:
+        if hasattr(self.ui, "dispatch"):
+            self.ui.dispatch("hands_free", {"active": bool(active)})
 
     # ------------------------------------------------------- startup
     def _startup_checks(self) -> None:
@@ -363,12 +467,19 @@ class Controller:
 
     # ------------------------------------------------------- voice input
     def start_ptt(self) -> None:
-        """js_api: begin push-to-talk recording (no-op if already on)."""
+        """js_api: begin push-to-talk recording (no-op if already on).
+        A tap while the continuous loop runs ends the loop (mic-tap stop)."""
+        if self._hands_free_active:
+            self.stop_hands_free("you tapped the mic", signoff=False)
+            return
         if not self.recorder.recording:
             self.toggle_mic()
 
     def stop_ptt(self) -> None:
         """js_api: stop recording and transcribe (no-op if not recording)."""
+        if self._hands_free_active:
+            self.stop_hands_free("you tapped the mic", signoff=False)
+            return
         if self.recorder.recording:
             self.toggle_mic()
 
@@ -470,6 +581,8 @@ class Controller:
             self.ui.dispatch("stt_interim", {"text": ""})
         if gen != self._stt_generation:
             return
+        if self._hands_free_handle_final(result.text, result.confidence):
+            return   # stop phrase / garble handled by the loop
         if not result.text:
             self.show_info("I didn't catch that clearly. Try once more?")
             self.set_state("ready")
@@ -510,6 +623,8 @@ class Controller:
         if generation != self._stt_generation:
             devlog.log(f"Stale STT result dropped: {result.text!r}")
             return
+        if self._hands_free_handle_final(result.text, result.confidence):
+            return   # stop phrase / garble handled by the loop
         if not result.text:
             # Empty STT must never set the busy state (sec 8/9).
             self.show_info("I didn't catch that clearly. Try once more?")
@@ -626,6 +741,12 @@ class Controller:
                 self.toggle_wake_word()
             else:
                 self._sync_toggle("wake_word", self.wake_listener is not None)
+        elif name == "hands_free":
+            if value:
+                self.start_hands_free()
+            else:
+                self.stop_hands_free("you turned it off", signoff=False)
+            self._sync_toggle("hands_free", self._hands_free_active)
         else:
             devlog.warn(f"Unknown toggle from frontend: {name!r}")
 
@@ -641,7 +762,8 @@ class Controller:
             "state": self.last_state,
             "chips": self.chips,
             "toggles": {"wake_word": self.wake_listener is not None,
-                        "voice": self.config.voice_enabled},
+                        "voice": self.config.voice_enabled,
+                        "hands_free": self._hands_free_active},
             "conversation": self.conversation.snapshot(),
             "devlog": devlog.entries(150),
             "pending": self.pipeline.pending_payload(),
@@ -919,6 +1041,9 @@ class Controller:
     def shutdown(self) -> None:
         """Release audio/db resources. Safe to call more than once."""
         try:
+            self._hands_free_active = False
+            if self._idle_timer is not None:
+                self._idle_timer.cancel()
             if self.wake_listener:
                 self.wake_listener.stop()
                 self.wake_listener = None

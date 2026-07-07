@@ -73,6 +73,8 @@ def test_recent_chat_turns_maps_conversation(monkeypatch):
 # ---- 8D.2 hands-free follow-up gating ----------------------------------------
 
 def test_hands_free_off_does_not_arm():
+    # arm_followup is a no-op now (9C replaced the one-shot window with the
+    # continuous loop); it must never arm anything.
     from app.main import Controller
     from tests.fakes import FakeMainUI
     controller = Controller(ui=FakeMainUI(), autostart=False,
@@ -81,23 +83,6 @@ def test_hands_free_off_does_not_arm():
     controller.speech.shutdown()
     controller.arm_followup()
     assert controller._followup_armed is False
-
-
-def test_hands_free_on_arms_then_fires_once():
-    from app.main import Controller
-    from tests.fakes import FakeMainUI
-    controller = Controller(ui=FakeMainUI(), autostart=False,
-                            config=make_config(hands_free_followup=True),
-                            memory=_Mem(), history=FakeHistory())
-    controller.speech.shutdown()
-    fired = []
-    controller._start_followup_listen = lambda: fired.append(True)
-    controller.arm_followup()
-    assert controller._followup_armed is True
-    controller._on_speaking_changed(False)   # speech finished
-    assert controller._followup_armed is False and fired == [True]
-    controller._on_speaking_changed(False)   # no re-fire
-    assert fired == [True]
 
 
 # ---- 8D.1 first-audio telemetry ----------------------------------------------

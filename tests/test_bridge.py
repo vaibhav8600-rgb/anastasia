@@ -73,7 +73,8 @@ def test_full_state_rehydrates_conversation_and_toggles():
     roles = [m["role"] for m in full["conversation"]]
     assert roles == ["user", "anna"]
     assert full["conversation"][1]["action"]["intent"] == "open_app"
-    assert full["toggles"] == {"wake_word": False, "voice": True}
+    assert full["toggles"] == {"wake_word": False, "voice": True,
+                               "hands_free": False}
     assert full["state"] in ("ready", "thinking")
     assert full["hotkey"] == "ctrl+alt+space"
     assert full["prefs"] == {"animation_quality": "medium"}

@@ -490,7 +490,9 @@ const handlers = {
   },
 
   toggle_sync: (p) => {
-    const el = p.name === "wake_word" ? $("#toggle-wake") : $("#toggle-voice");
+    const map = { wake_word: "#toggle-wake", voice: "#toggle-voice",
+                  hands_free: "#toggle-hands-free" };
+    const el = $(map[p.name]);
     if (el) el.checked = !!p.value;
   },
 
@@ -520,6 +522,16 @@ const handlers = {
   stt_interim: (p) => {
     const el = $("#stt-interim");
     if (el) el.textContent = (p && p.text) || "";
+  },
+
+  // Continuous hands-free (9C): always-visible "conversation mode" state.
+  hands_free: (p) => {
+    const on = !!(p && p.active);
+    document.body.classList.toggle("hands-free", on);
+    const badge = $("#hands-free-badge");
+    if (badge) badge.classList.toggle("hidden", !on);
+    const toggle = $("#toggle-hands-free");
+    if (toggle) toggle.checked = on;
   },
 
   prefs: (p) => setAnimQuality(p.animation_quality),
@@ -575,6 +587,7 @@ const handlers = {
     if (p.toggles) {
       $("#toggle-wake").checked = !!p.toggles.wake_word;
       $("#toggle-voice").checked = !!p.toggles.voice;
+      handlers.hands_free({ active: !!p.toggles.hands_free });
     }
     if (p.hotkey) {
       const pretty = p.hotkey.split("+").map(s =>
@@ -634,6 +647,8 @@ document.addEventListener("DOMContentLoaded", () => {
     call("set_toggle", "wake_word", e.target.checked));
   $("#toggle-voice").addEventListener("change", (e) =>
     call("set_toggle", "voice", e.target.checked));
+  $("#toggle-hands-free").addEventListener("change", (e) =>
+    call("set_toggle", "hands_free", e.target.checked));
 
   $("#clear-btn").addEventListener("click", () => call("clear_history"));
   $("#recheck-btn").addEventListener("click", () => call("recheck"));

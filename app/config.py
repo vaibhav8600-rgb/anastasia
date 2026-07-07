@@ -143,6 +143,11 @@ class AppConfig(BaseModel):
     # a follow-up without pressing PTT. Off by default; half-duplex still applies.
     hands_free_followup: bool = False
     hands_free_window_s: float = 6.0
+    # Continuous hands-free (9C): a true back-and-forth loop — the mic reopens
+    # automatically after Anna finishes, until a stop phrase / mic tap / idle
+    # timeout. Persists across restarts. Half-duplex + barge-in still apply.
+    hands_free: bool = False
+    hands_free_idle_timeout_s: float = 45.0
 
     # Tools
     default_browser: str = ""            # empty = system default; or alias key e.g. "chrome"

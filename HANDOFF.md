@@ -1,5 +1,23 @@
 # HANDOFF — Anastasia (Anna) overhaul
 
+> **Phase 9C (continuous hands-free) DONE.** Replaced the 8D one-shot 6s
+> follow-up with a true loop. config: hands_free (persists), 
+> hands_free_idle_timeout_s (45). Controller: start_hands_free/stop_hands_free
+> (signoff "I'll be right here..."), _hands_free_continue (reopens mic after
+> _on_speaking_changed(False) when active + not processing/pending/speaking,
+> after audio_gate.TAIL echo clear), _reset_idle_timer/_on_idle_timeout,
+> _hands_free_handle_final(text,confidence) -> stop-phrase (STOP_PHRASES:
+> "stop listening"/"that's all"/"bye"/"goodbye anna"/... -> stop+signoff),
+> empty/low-conf(<0.4) garble -> don't route, keep listening, 3-streak ->
+> ONE "still there?" check-in. Wired into BOTH _on_stt_final (streaming) and
+> _finish_recording (local) before submit. Mic tap (start/stop_ptt) ends loop.
+> Barge-in in toggle_mic already aborts stream+TTS. set_toggle("hands_free")
+> + startup resume (ui.after 1500 if config.hands_free) + full_state toggles.
+> arm_followup now a no-op. UI: #toggle-hands-free (bottom bar), #hands-free-badge
+> ("conversation mode"), body.hands-free, hands_free event. 233 tests (13 new;
+> updated 2 obsolete 8D/bridge tests). Next: 9D full-loop measure + avatar.
+
+
 > **Phase 9B (streamed LLM->TTS) DONE.** GroqProvider.complete_stream (SSE,
 > stream:true, on_token/should_abort, first_token_ms/aborted on LLMResult);
 > BrainRouter.stream_chat (Groq stream -> Ollama non-streaming fallback, same
