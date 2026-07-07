@@ -1,5 +1,20 @@
 # HANDOFF — Anastasia (Anna) overhaul
 
+> **Phase 9.1C DONE (Deepgram Aura TTS).** app/voice/tts_deepgram.py:
+> synthesize_deepgram (Aura REST, linear16 16kHz PCM -> WAV), validate_
+> deepgram_tts, deepgram_tts_available/status; reuses deepgram_key. config
+> tts_deepgram_model=aura-2-luna-en; tts_backend adds "deepgram". speech_output:
+> _speak_deepgram (WAV via _play_wav_cancellable so barge-in+orb envelope work),
+> Aura circuit breaker (2 fails -> deepgram_tts_unhealthy, one warning, fall to
+> _speak_piper_or_windows), reset_aura_circuit; barge-in checks _cancel after
+> synth. Controller: Voice chip "Voice: Deepgram · luna" / "(Deepgram error)" /
+> "(no key)"; validate_deepgram_tts + js_api + settings picker + Privacy note
+> ("Deepgram voice sends reply text"). Piper stays the local/default.
+> HONEST LATENCY: from this user's location (India) Aura is 2-7s per sentence
+> (network RTT to Deepgram US) vs warm Piper 379ms — Aura is SLOWER here, not
+> faster; recommend Piper default. 260 tests. Next: 9.1D screenshot thumbnails.
+
+
 > **Phase 9.1A + 9.1B DONE.** 9.1A: SQLite crash on confirmed actions fixed —
 > history.py now per-call connections (WAL + busy_timeout=30000), log/recent/
 > clear never raise; pipeline reports success from result.success then logs

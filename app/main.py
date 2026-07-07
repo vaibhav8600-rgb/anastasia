@@ -439,7 +439,16 @@ class Controller:
     def _push_chips(self, model_state: str) -> None:
         """Top-bar chips: Local model / Mic / Voice (spec sec 4/18)."""
         backend = self.config.tts_backend
-        if backend == "kokoro" and getattr(self, "_kokoro_ok", False):
+        if backend == "deepgram":
+            from app.voice.tts_deepgram import deepgram_tts_available
+            if not deepgram_tts_available(self.config):
+                voice_label, voice_state = "Voice: Piper (Deepgram: no key)", "warn"
+            elif getattr(self.speech, "deepgram_tts_unhealthy", False):
+                voice_label, voice_state = "Voice: Piper (Deepgram error)", "warn"
+            else:
+                short = self.config.tts_deepgram_model.replace("aura-2-", "").replace("aura-", "").replace("-en", "")
+                voice_label, voice_state = f"Voice: Deepgram · {short}", "ok"
+        elif backend == "kokoro" and getattr(self, "_kokoro_ok", False):
             voice_label, voice_state = \
                 f"Voice: Kokoro · {self.config.kokoro_voice}", "ok"
         elif backend in ("auto", "piper") and getattr(self, "_piper_ok", False):
@@ -879,6 +888,7 @@ class Controller:
                 "kokoro_model": c.kokoro_model,
                 "kokoro_voices": c.kokoro_voices,
                 "kokoro_voice": c.kokoro_voice,
+                "tts_deepgram_model": c.tts_deepgram_model,
                 "tts_rate": c.tts_rate,
                 "tts_volume": c.tts_volume,
                 "faster_whisper_model": c.faster_whisper_model,
@@ -919,6 +929,7 @@ class Controller:
         "tts_backend": str, "piper_exe": str, "piper_voice": str,
         "piper_length_scale": float,
         "kokoro_model": str, "kokoro_voices": str, "kokoro_voice": str,
+        "tts_deepgram_model": str,
         "tts_rate": float, "tts_volume": int,
         "faster_whisper_model": str, "microphone_device": str,
         "stt_language": str,
@@ -930,8 +941,9 @@ class Controller:
     }
     _SETTINGS_CHOICES = {
         "animation_quality": {"low", "medium", "high"},
-        "tts_backend": {"auto", "piper", "kokoro", "windows", "off"},
+        "tts_backend": {"auto", "piper", "kokoro", "deepgram", "windows", "off"},
         "kokoro_voice": {"af_heart", "af_bella"},
+        "tts_deepgram_model": {"aura-2-luna-en", "aura-asteria-en", "aura-luna-en"},
         "faster_whisper_model": {"tiny", "base", "base.en", "small", "small.en"},
         "stt_language": {"auto", "en", "hi", "mr"},
         "brain_mode": {"hybrid", "local_only"},
@@ -1040,6 +1052,19 @@ class Controller:
             ok, message = validate_kokoro_config(self.config, play=True)
             self._test_result("kokoro", ok, message)
             self._kokoro_ok = ok
+            self._push_chips(self.chips.get("model", {}).get("state", "offline"))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def validate_deepgram_tts(self) -> None:
+        """Settings button: probe Aura; success restores a benched backend."""
+        def worker():
+            from app.voice.tts_deepgram import validate_deepgram_tts
+            ok, message = validate_deepgram_tts(self.config, play=True)
+            self._test_result("deepgram_tts", ok, message)
+            if ok:
+                self.speech.reset_aura_circuit()
+            else:
+                self.speech.deepgram_tts_unhealthy = True
             self._push_chips(self.chips.get("model", {}).get("state", "offline"))
         threading.Thread(target=worker, daemon=True).start()
 

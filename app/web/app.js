@@ -343,6 +343,8 @@ function settingsHtml(s) {
       <li>Files, screenshots and batch recordings NEVER leave this PC.</li>
       <li>Streaming speech (below) sends live mic audio to Deepgram while the
           mic is open; local mode keeps all audio on-device.</li>
+      <li>Deepgram voice (if chosen) sends Anna's reply text to Deepgram to
+          synthesize speech; Piper/Kokoro voices synthesize fully on this PC.</li>
       <li>Clipboard text stays local unless you enable the toggle below.</li>
       <li>Local-only mode sends nothing anywhere, ever.</li>
     </ul>
@@ -408,7 +410,20 @@ function settingsHtml(s) {
     <h4 class="settings-section">Voice output (Anna's voice)</h4>
     <div class="form-row"><label>Voice engine</label>
       ${selectHtml("tts_backend", s.tts_backend,
-        ["auto", "piper", "kokoro", "windows", "off"])}</div>
+        ["auto", "piper", "kokoro", "deepgram", "windows", "off"])}</div>
+    <p class="settings-hint">Piper and Kokoro synthesize fully on this PC (the
+      privacy default). <b>Deepgram (Aura)</b> is a warm cloud voice with very
+      low latency, but sends Anna's reply text to Deepgram to synthesize.</p>
+
+    <div class="voice-setup-card">
+      <h5>Deepgram Aura (cloud voice)</h5>
+      <p class="settings-hint">Uses your Deepgram key (same one as streaming
+        speech). Sends Anna's reply text to Deepgram; nothing else.</p>
+      <div class="form-row"><label>Aura voice</label>
+        ${selectHtml("tts_deepgram_model", s.tts_deepgram_model || "aura-2-luna-en",
+          ["aura-2-luna-en", "aura-asteria-en", "aura-luna-en"])}</div>
+      <button class="ghost-btn" id="validate-deepgram-tts">Validate Deepgram voice</button>
+    </div>
 
     <div class="voice-setup-card">
       <h5>Set up Piper</h5>
@@ -489,6 +504,7 @@ function collectSettings() {
     kokoro_model: val("kokoro_model"),
     kokoro_voices: val("kokoro_voices"),
     kokoro_voice: val("kokoro_voice"),
+    tts_deepgram_model: val("tts_deepgram_model"),
     tts_rate: parseFloat(val("tts_rate")) || 1.0,
     tts_volume: parseInt(val("tts_volume"), 10),
   };
@@ -592,6 +608,10 @@ const handlers = {
     });
     $("#validate-kokoro").addEventListener("click", () => {
       call("save_settings", collectSettings()).then(() => call("validate_kokoro"));
+    });
+    const vdg = $("#validate-deepgram-tts");
+    if (vdg) vdg.addEventListener("click", () => {
+      call("save_settings", collectSettings()).then(() => call("validate_deepgram_tts"));
     });
   },
 

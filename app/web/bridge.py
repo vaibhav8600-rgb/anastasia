@@ -196,6 +196,9 @@ class JsApi:
     def validate_kokoro(self) -> None:
         self._controller.validate_kokoro()
 
+    def validate_deepgram_tts(self) -> None:
+        self._controller.validate_deepgram_tts()
+
     def test_microphone(self) -> None:
         self._controller.test_microphone()
 

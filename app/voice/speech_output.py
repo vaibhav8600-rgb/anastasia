@@ -50,6 +50,8 @@ class SpeechOutput:
         self._proc_lock = threading.Lock()
         self.piper_unhealthy = False        # TTS circuit breaker (session)
         self._piper_failures = 0
+        self.deepgram_tts_unhealthy = False  # Aura circuit breaker (9.1C)
+        self._aura_failures = 0
         self._setup_warned = set()          # one unconfigured-warning per backend
         self.on_tts_health_change = None    # callback() — chip refresh
         self.on_first_audio = None          # callback(ms) — reply-ready -> audible
@@ -193,9 +195,65 @@ class SpeechOutput:
             except Exception:
                 pass
 
+    # ------------------------------------------ Aura circuit breaker (9.1C)
+    AURA_CIRCUIT_FAILURES = 2
+
+    def _aura_failed(self, exc) -> None:
+        self._aura_failures += 1
+        if self._aura_failures >= self.AURA_CIRCUIT_FAILURES \
+                and not self.deepgram_tts_unhealthy:
+            self.deepgram_tts_unhealthy = True
+            devlog.warn(f"Deepgram Aura disabled for this session after "
+                        f"{self._aura_failures} failures ({_short_error(exc)}) "
+                        "— using Piper. Fix in Settings and press Validate.")
+            self._notify_tts_health()
+        else:
+            devlog.warn(f"Deepgram Aura failed ({_short_error(exc)}); "
+                        "falling back to Piper.")
+
+    def reset_aura_circuit(self) -> None:
+        self._setup_warned.discard("deepgram")
+        if self.deepgram_tts_unhealthy or self._aura_failures:
+            self._aura_failures = 0
+            self.deepgram_tts_unhealthy = False
+            devlog.log("Deepgram Aura circuit reset — Aura is back.")
+            self._notify_tts_health()
+
+    def _speak_piper_or_windows(self, text: str) -> None:
+        """Piper -> SAPI fallback chain, reused as Aura's fallback."""
+        from app.voice.tts_piper import piper_available
+        if piper_available(self.config) and not self.piper_unhealthy:
+            try:
+                self._speak_piper(text)
+                self._piper_succeeded()
+                return
+            except Exception as e:
+                self._piper_failed(e)
+        self._speak_windows(text)
+
     # --------------------------------------------------------- backends
     def _speak(self, text: str) -> None:
         backend = self.config.tts_backend
+        if backend == "deepgram":
+            from app.voice.tts_deepgram import deepgram_tts_available
+            if not deepgram_tts_available(self.config):
+                if "deepgram" not in self._setup_warned:
+                    self._setup_warned.add("deepgram")
+                    devlog.warn("Deepgram voice selected but no key — using "
+                                "Piper until a key is added (Settings).")
+                self._speak_piper_or_windows(text)
+                return
+            if self.deepgram_tts_unhealthy:
+                self._speak_piper_or_windows(text)
+                return
+            try:
+                self._speak_deepgram(text)
+                self._aura_failures = 0
+                return
+            except Exception as e:
+                self._aura_failed(e)
+                self._speak_piper_or_windows(text)
+                return
         if backend == "auto":
             from app.voice.tts_piper import piper_available
             if piper_available(self.config) and not self.piper_unhealthy:
@@ -244,6 +302,20 @@ class SpeechOutput:
                 devlog.warn(f"Kokoro failed ({e}); check Voice settings.")
             return
         self._speak_windows(text)
+
+    def _speak_deepgram(self, text: str) -> None:
+        from app.voice.tts_deepgram import synthesize_deepgram
+        import tempfile
+        wav_path = Path(tempfile.gettempdir()) / \
+            f"anna_aura_{threading.get_ident()}.wav"
+        synthesize_deepgram(text, self.config, wav_path)
+        if self._cancel.is_set():          # barge-in during synthesis
+            wav_path.unlink(missing_ok=True)
+            return
+        try:
+            self._play_wav_cancellable(wav_path)
+        finally:
+            wav_path.unlink(missing_ok=True)
 
     def _speak_piper(self, text: str) -> None:
         from app.voice.tts_piper import synthesize_piper
