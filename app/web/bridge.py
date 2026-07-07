@@ -202,6 +202,9 @@ class JsApi:
     def test_model(self) -> None:
         self._controller.test_model()
 
+    def get_brain_info(self) -> dict:
+        return self._controller.brain_info()
+
     # -- data ---------------------------------------------------------------
     def get_history(self, page=0) -> list:
         return self._controller.history.recent(50)

@@ -82,15 +82,18 @@ class OllamaClient:
 
     def chat(self, messages: list, json_format: bool = True,
              temperature: float = 0.1, num_predict: int = None,
-             model: str = None) -> str:
-        """Send a chat request; returns the assistant message content."""
+             model: str = None, timeout_s: float = None) -> str:
+        """Send a chat request; returns the assistant message content.
+        timeout_s overrides the configured read timeout (used when Ollama
+        acts as the capped fallback after a cloud failure)."""
         selected_model = model or self.config.ollama_model
         payload = self._build_payload(messages, json_format, temperature,
                                       num_predict, selected_model)
         started = time.perf_counter()
         try:
             r = requests.post(f"{self.base_url}/api/chat", json=payload,
-                              timeout=(CONNECT_TIMEOUT, self.config.ollama_timeout))
+                              timeout=(CONNECT_TIMEOUT,
+                                       timeout_s or self.config.ollama_timeout))
         except requests.exceptions.ConnectionError as e:
             raise OllamaNotRunning(
                 "Ollama is not reachable. Start it with `ollama serve` "

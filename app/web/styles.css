@@ -120,6 +120,9 @@ body:not([data-anim="high"]) #halo-canvas { display: none; }
 .chip[data-state="warn"] .dot { background: var(--warn); }
 .chip[data-state="offline"] .dot, .chip[data-state="missing"] .dot,
 .chip[data-state="bad"] .dot { background: var(--error); }
+.chip[data-state="local"] .dot { background: var(--blue); }
+.chip-click { cursor: pointer; }
+.chip-click:hover { border-color: rgba(59, 130, 246, .5); color: var(--text-hi); }
 
 @keyframes pulse { 50% { opacity: .35; } }
 

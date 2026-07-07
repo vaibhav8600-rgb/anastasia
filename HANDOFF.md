@@ -1,5 +1,17 @@
 # HANDOFF — Anastasia (Anna) overhaul
 
+> **Phase 8A (hybrid brain) DONE, awaiting approval + user's Groq key for
+> live latency numbers.** New: app/llm/providers.py (GroqProvider,
+> OllamaProvider getter-based, BrainRouter: hybrid→Groq 8s→Ollama 15s capped
+> fallback→BrainUnavailable honest message; circuit 3 fails→open 120s→probe).
+> Agent.plan_llm/plan_chat go through brain.complete(kind); trace gains
+> provider/failover; Brain chip (Groq green / local blue / cloud-offline
+> amber) + popover (js_api.get_brain_info); Cloud brain settings section,
+> key masked gsk_...last4, never logged/dispatched (test-enforced), env
+> GROQ_API_KEY wins. Config: brain_mode/groq_api_key/cloud_model/
+> cloud_timeout_s. 174 tests. Next: 8B piper binary fix, 8C privacy tiers,
+> 8D latency polish (see Phase 8 prompt in session).
+
 > Continuation file for any agent picking up this project mid-flight.
 > Last update: **2026-07-05, end of Phase 6 — ALL SIX PHASES COMPLETE.**
 > See: ARCHITECTURE.md (design) · SKILL.md (commands) · FINAL_REPORT.md

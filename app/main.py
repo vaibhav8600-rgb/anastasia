@@ -63,6 +63,9 @@ class Controller:
         self.pipeline = CommandPipeline(
             config=self.config, agent=self.agent, history=self.history,
             ui=self, speech=self.speech, cancel_recording=self.cancel_recording)
+        if hasattr(self.agent, "brain"):
+            # live Brain chip updates on failover / circuit transitions
+            self.agent.brain.on_state_change = self._on_brain_state
 
         if autostart:
             self._register_hotkey()
@@ -203,6 +206,15 @@ class Controller:
         else:
             self._ui(self.ui.hide_setup_card)
 
+    def _on_brain_state(self) -> None:
+        self._push_chips(self.chips.get("model", {}).get("state", "offline"))
+
+    def brain_info(self) -> dict:
+        """js_api: Brain chip popover data. Never contains the API key."""
+        if hasattr(self.agent, "brain"):
+            return self.agent.brain.info()
+        return {"mode": "local_only", "circuit": "closed", "calls": []}
+
     def _push_chips(self, model_state: str) -> None:
         """Top-bar chips: Local model / Mic / Voice (spec sec 4/18)."""
         backend = self.config.tts_backend
@@ -219,7 +231,17 @@ class Controller:
             voice_label, voice_state = f"Voice: {backend.title()} setup needed", "warn"
         else:
             voice_label, voice_state = "Voice: Windows fallback", "warn"
+        brain = getattr(self.agent, "brain", None)
+        if brain is None or brain.mode() == "local_only":
+            brain_chip = {"label": f"Brain: Local · {self.config.ollama_model}",
+                          "state": "local"}
+        elif brain.circuit_open():
+            brain_chip = {"label": "Brain: Local (cloud offline)", "state": "warn"}
+        else:
+            short = self.config.cloud_model.split("-versatile")[0]
+            brain_chip = {"label": f"Brain: Groq · {short}", "state": "ok"}
         self.chips = {
+            "brain": brain_chip,
             "model": {"label": f"Local model: {self.config.ollama_model}",
                       "state": model_state},
             "mic": {"label": "Mic: Ready" if getattr(self, "_mic_ok", True)
@@ -499,7 +521,20 @@ class Controller:
                 "stt_language": c.stt_language,
                 "silence_seconds": c.silence_seconds,
                 "max_record_seconds": c.max_record_seconds,
+                # Cloud brain — the raw key NEVER goes to the frontend.
+                "brain_mode": c.brain_mode,
+                "cloud_model": c.cloud_model,
+                "cloud_timeout_s": c.cloud_timeout_s,
+                "groq_key_masked": self._masked_groq_key(),
+                "groq_key_set": self.agent.brain.groq.configured()
+                                if hasattr(self.agent, "brain") else False,
             })
+
+    def _masked_groq_key(self) -> str:
+        from app.llm.providers import mask_key
+        import os
+        return mask_key(os.environ.get("GROQ_API_KEY")
+                        or self.config.groq_api_key)
 
     _SETTINGS_FIELDS = {
         "ollama_url": str, "ollama_model": str, "chat_model": str,
@@ -511,6 +546,7 @@ class Controller:
         "tts_rate": float, "tts_volume": int,
         "faster_whisper_model": str, "stt_language": str,
         "silence_seconds": float, "max_record_seconds": int,
+        "brain_mode": str, "cloud_model": str, "cloud_timeout_s": float,
     }
     _SETTINGS_CHOICES = {
         "animation_quality": {"low", "medium", "high"},
@@ -518,6 +554,7 @@ class Controller:
         "kokoro_voice": {"af_heart", "af_bella"},
         "faster_whisper_model": {"tiny", "base", "base.en", "small", "small.en"},
         "stt_language": {"auto", "en", "hi", "mr"},
+        "brain_mode": {"hybrid", "local_only"},
     }
 
     def save_settings(self, settings: dict) -> None:
@@ -541,6 +578,13 @@ class Controller:
                 changed.append("user_name")
             except Exception:
                 pass
+        if "groq_api_key" in settings:
+            # Never store the masked placeholder; empty string clears the key.
+            key = str(settings["groq_api_key"] or "").strip()
+            if "..." not in key and "•" not in key \
+                    and key != self.config.groq_api_key:
+                self.config.groq_api_key = key
+                changed.append("groq_api_key (hidden)")
         if changed:
             self.config.save()
             devlog.log(f"Settings changed: {', '.join(changed)}")

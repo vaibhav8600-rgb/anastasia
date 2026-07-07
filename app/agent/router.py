@@ -326,6 +326,8 @@ class Agent:
         self.memory = memory
         self.history = history
         self.llm = OllamaClient(config)
+        from app.llm.providers import BrainRouter
+        self.brain = BrainRouter(config, lambda: self.llm)
 
     # -- planning -----------------------------------------------------
     def plan_rule(self, text: str) -> Optional[ActionPlan]:
@@ -336,13 +338,16 @@ class Agent:
         return match_fuzzy_command(text, self.config)
 
     def plan_llm(self, text: str) -> ActionPlan:
-        """LLM planning with one strict retry on bad JSON."""
-        content = self.llm.chat(build_intent_messages(text, self.config, self.memory))
-        ap = parse_action_plan(content)
+        """LLM planning with one strict retry on bad JSON. The brain router
+        picks Groq or Ollama; the plan still passes local safety either way."""
+        result = self.brain.complete(
+            "command", build_intent_messages(text, self.config, self.memory))
+        ap = parse_action_plan(result.text)
         if ap is None:
-            content = self.llm.chat(
+            result = self.brain.complete(
+                "command",
                 build_intent_messages(text, self.config, self.memory, strict=True))
-            ap = parse_action_plan(content)
+            ap = parse_action_plan(result.text)
         if ap is None:
             return ActionPlan(
                 assistant_message="Sorry, I didn't quite get that — could you say it again for me?",
@@ -352,10 +357,10 @@ class Agent:
     def plan_chat(self, text: str) -> tuple[ActionPlan, bool]:
         """Fast plain-text chat; command handoff re-enters structured planning."""
         chat_model = self.config.chat_model or self.config.ollama_model
-        content = self.llm.chat(
-            build_chat_messages(text, self.config, self.memory),
-            json_format=False, temperature=0.7, num_predict=100,
-            model=chat_model).strip()
+        result = self.brain.complete(
+            "chat", build_chat_messages(text, self.config, self.memory),
+            model=chat_model)   # model applies to the local fallback only
+        content = result.text.strip()
         normalized = content.strip("` \r\n")
         if normalized.startswith("json\n"):
             normalized = normalized[5:].strip()

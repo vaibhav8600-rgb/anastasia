@@ -75,6 +75,13 @@ class AppConfig(BaseModel):
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.2:3b"
     chat_model: str = ""                  # empty = use ollama_model
+
+    # Cloud brain (Groq, optional). Key also via env GROQ_API_KEY (env wins);
+    # never logged, never sent to the frontend (masked in Settings).
+    brain_mode: str = "hybrid"            # "hybrid" | "local_only"
+    groq_api_key: str = ""
+    cloud_model: str = "llama-3.3-70b-versatile"
+    cloud_timeout_s: float = 8.0          # Groq answers ~1s; >8s = fail over
     ollama_timeout: int = 20
     ollama_keep_alive: str = "30m"   # keeps the model loaded between requests
     ollama_num_predict: int = 220    # hard cap on generated tokens

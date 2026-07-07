@@ -25,6 +25,7 @@ from app.agent.router import classify_input_mode, match_fuzzy_command
 from app.agent.responses import ROTATED_ACTION_INTENTS, warm_action_responses
 from app.agent.safety import validate_action
 from app.llm.ollama_client import OllamaError, OllamaModelMissing, OllamaNotRunning
+from app.llm.providers import BrainUnavailable
 from app.voice.stt_whisper import SpeechConfidence
 
 BUSY_MESSAGE = "One moment — I'm finishing the last command."
@@ -258,6 +259,10 @@ class CommandPipeline:
                     trace.route = "command_llm"
                     plan = self.agent.plan_llm(norm.cleaned)
                 trace.llm_ms = (time.perf_counter() - t0) * 1000
+                brain = getattr(self.agent, "brain", None)
+                if brain is not None:
+                    trace.provider = brain.last.provider
+                    trace.failover = brain.last.failover
 
             trace.intent = plan.intent
             trace.args = plan.arguments
@@ -297,6 +302,8 @@ class CommandPipeline:
             # 5) execute
             self._run_tool(plan, safety, transcript, trace)
 
+        except BrainUnavailable as e:
+            self._fail(transcript, str(e), trace)
         except OllamaNotRunning:
             self._fail(transcript, "My local brain (Ollama) isn't running, so I can't "
                                    "do the thinking part. Simple commands still work.", trace)

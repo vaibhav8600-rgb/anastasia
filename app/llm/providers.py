@@ -1,0 +1,278 @@
+"""LLM provider abstraction + hybrid brain routing (Phase 8A).
+
+GroqProvider  — cloud brain (OpenAI-compatible API, llama-3.3-70b class).
+OllamaProvider — local brain, wraps the existing OllamaClient unchanged.
+BrainRouter   — owns provider selection, failover and a circuit breaker.
+
+Architecture principles enforced here:
+  * Any provider only ever returns text/JSON — untrusted input that still
+    passes the LOCAL safety validator downstream. No elevated privileges.
+  * The Groq API key is read from env GROQ_API_KEY (wins) or config; it is
+    never logged and never leaves this module except as an auth header.
+  * Rules never reach this module at all (router handles them first).
+"""
+
+import os
+import threading
+import time
+from collections import deque
+from dataclasses import dataclass, field
+
+import requests
+
+from app.agent.devlog import devlog
+from app.llm.ollama_client import OllamaError
+
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+CIRCUIT_FAILURES = 3          # consecutive failures that open the circuit
+CIRCUIT_COOLDOWN_S = 120.0    # stay open this long, then probe
+
+# Per-kind generation parameters. The 70B model gets the SAME slim prompts;
+# only token caps / temperature differ per provider.
+KIND_PARAMS = {
+    "command": {"json_mode": True, "temperature": 0.1,
+                "groq_max_tokens": 300, "ollama_num_predict": None},
+    "chat":    {"json_mode": False, "temperature": 0.7,
+                "groq_max_tokens": 150, "ollama_num_predict": 100},
+}
+
+
+class BrainUnavailable(OllamaError):
+    """Both brains failed. Message is user-facing and honest."""
+
+
+@dataclass
+class LLMResult:
+    text: str = ""
+    provider: str = ""
+    latency_ms: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    error: str = ""       # "" | timeout | auth | rate_limit | network | bad_response
+    error_detail: str = ""
+    failover: bool = False
+
+    @property
+    def ok(self) -> bool:
+        return not self.error
+
+
+def mask_key(key: str) -> str:
+    """Display form only: 'gsk_...abcd'. Never reveals the middle."""
+    key = key or ""
+    if len(key) < 9:
+        return "•••" if key else ""
+    return f"{key[:4]}...{key[-4:]}"
+
+
+class GroqProvider:
+    name = "groq"
+
+    def __init__(self, config):
+        self.config = config
+
+    def api_key(self) -> str:
+        return os.environ.get("GROQ_API_KEY") or \
+            getattr(self.config, "groq_api_key", "") or ""
+
+    def configured(self) -> bool:
+        return bool(self.api_key())
+
+    def health_check(self) -> bool:
+        try:
+            r = requests.get("https://api.groq.com/openai/v1/models",
+                             headers={"Authorization": f"Bearer {self.api_key()}"},
+                             timeout=5)
+            return r.status_code == 200
+        except requests.RequestException:
+            return False
+
+    def complete(self, messages, *, json_mode: bool, max_tokens: int,
+                 temperature: float, timeout_s: float) -> LLMResult:
+        payload = {
+            "model": self.config.cloud_model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        started = time.perf_counter()
+        try:
+            r = requests.post(
+                GROQ_URL, json=payload, timeout=(3.05, timeout_s),
+                headers={"Authorization": f"Bearer {self.api_key()}"})
+        except requests.exceptions.Timeout:
+            return LLMResult(provider=self.name, error="timeout",
+                             error_detail=f"no answer within {timeout_s:.0f}s")
+        except requests.RequestException as e:
+            return LLMResult(provider=self.name, error="network",
+                             error_detail=type(e).__name__)
+
+        elapsed = (time.perf_counter() - started) * 1000
+        if r.status_code in (401, 403):
+            return LLMResult(provider=self.name, latency_ms=elapsed,
+                             error="auth", error_detail="key rejected")
+        if r.status_code == 429:
+            retry_after = r.headers.get("retry-after", "?")
+            return LLMResult(provider=self.name, latency_ms=elapsed,
+                             error="rate_limit",
+                             error_detail=f"retry-after={retry_after}s")
+        if r.status_code >= 400:
+            return LLMResult(provider=self.name, latency_ms=elapsed,
+                             error="bad_response",
+                             error_detail=f"HTTP {r.status_code}")
+        try:
+            body = r.json()
+            text = body["choices"][0]["message"]["content"] or ""
+            usage = body.get("usage", {})
+        except (ValueError, KeyError, IndexError, TypeError):
+            return LLMResult(provider=self.name, latency_ms=elapsed,
+                             error="bad_response", error_detail="unparseable body")
+        return LLMResult(text=text, provider=self.name, latency_ms=elapsed,
+                         prompt_tokens=usage.get("prompt_tokens", 0),
+                         completion_tokens=usage.get("completion_tokens", 0))
+
+
+class OllamaProvider:
+    name = "ollama"
+
+    def __init__(self, client):
+        # Accepts the client itself or a zero-arg getter. Agent passes a
+        # getter so tests that swap agent.llm keep working transparently.
+        self._client = client
+
+    @property
+    def client(self):
+        return self._client() if callable(self._client) else self._client
+
+    def health_check(self) -> bool:
+        return self.client.is_available()
+
+    def complete(self, messages, *, json_mode: bool, num_predict,
+                 temperature: float, timeout_s: float = None,
+                 model: str = None) -> LLMResult:
+        started = time.perf_counter()
+        text = self.client.chat(messages, json_format=json_mode,
+                                temperature=temperature,
+                                num_predict=num_predict, model=model,
+                                timeout_s=timeout_s)
+        return LLMResult(text=text, provider=self.name,
+                         latency_ms=(time.perf_counter() - started) * 1000)
+
+
+class BrainRouter:
+    """Provider selection + failover chain + circuit breaker.
+
+    hybrid + key + circuit closed:  Groq -> (on failure) Ollama
+    local_only / no key / open:     Ollama only (existing behavior)
+    Both failed -> BrainUnavailable with an honest message.
+    """
+
+    HONEST_FAILURE = ("My cloud brain is unreachable and my local brain timed "
+                      "out. Simple commands still work — try me again in a moment.")
+
+    def __init__(self, config, ollama_client):
+        self.config = config
+        self.groq = GroqProvider(config)
+        self.ollama = OllamaProvider(ollama_client)
+        self.history = deque(maxlen=10)   # popover: last LLM calls
+        self.last: LLMResult = LLMResult()
+        self.on_state_change = None       # callback() — chip refresh
+        self._failures = 0
+        self._open_until = 0.0
+        self._lock = threading.Lock()
+
+    # ----------------------------------------------------------- state
+    def mode(self) -> str:
+        """Effective mode: hybrid only with a key configured."""
+        if getattr(self.config, "brain_mode", "hybrid") == "local_only":
+            return "local_only"
+        return "hybrid" if self.groq.configured() else "local_only"
+
+    def circuit_open(self) -> bool:
+        return time.monotonic() < self._open_until
+
+    def circuit_state(self) -> str:
+        if not self.circuit_open():
+            return "closed"
+        return f"open ({self._open_until - time.monotonic():.0f}s left)"
+
+    def _notify(self) -> None:
+        if self.on_state_change:
+            try:
+                self.on_state_change()
+            except Exception:
+                pass
+
+    def _record(self, kind: str, result: LLMResult) -> None:
+        self.history.append({
+            "ts": time.strftime("%H:%M:%S"), "kind": kind,
+            "provider": result.provider, "latency_ms": round(result.latency_ms),
+            "error": result.error, "failover": result.failover,
+        })
+        self.last = result
+
+    # ------------------------------------------------------------ core
+    def complete(self, kind: str, messages: list, model: str = None) -> LLMResult:
+        """Returns an LLMResult on success. Raises OllamaError family
+        (incl. BrainUnavailable) on total failure so the pipeline's existing
+        recovery paths keep working."""
+        params = KIND_PARAMS[kind]
+        use_groq = self.mode() == "hybrid" and not self.circuit_open()
+
+        if use_groq:
+            result = self.groq.complete(
+                messages, json_mode=params["json_mode"],
+                max_tokens=params["groq_max_tokens"],
+                temperature=params["temperature"],
+                timeout_s=getattr(self.config, "cloud_timeout_s", 8.0))
+            self._record(kind, result)
+            if result.ok:
+                with self._lock:
+                    if self._failures or self._open_until:
+                        self._failures = 0
+                        self._open_until = 0.0
+                        devlog.log("Brain circuit CLOSED — cloud brain healthy again.")
+                        self._notify()
+                return result
+            # Groq failed -> count towards the circuit, fall back to local.
+            with self._lock:
+                self._failures += 1
+                if self._failures >= CIRCUIT_FAILURES and not self.circuit_open():
+                    self._open_until = time.monotonic() + CIRCUIT_COOLDOWN_S
+                    devlog.warn(f"Brain circuit OPEN for {CIRCUIT_COOLDOWN_S:.0f}s "
+                                f"after {self._failures} consecutive cloud failures.")
+                    self._notify()
+            devlog.warn(f"Cloud brain failed ({result.error}: {result.error_detail}) "
+                        "— falling back to the local brain.")
+            try:
+                fallback = self.ollama.complete(
+                    messages, json_mode=params["json_mode"],
+                    num_predict=params["ollama_num_predict"],
+                    temperature=params["temperature"],
+                    timeout_s=15.0,          # capped when acting as fallback
+                    model=model)
+            except OllamaError as e:
+                failed = LLMResult(provider="ollama", error="timeout",
+                                   error_detail=str(e)[:120], failover=True)
+                self._record(kind, failed)
+                raise BrainUnavailable(self.HONEST_FAILURE) from e
+            fallback.failover = True
+            self._record(kind, fallback)
+            return fallback
+
+        # local-only path — existing behavior, existing exceptions.
+        result = self.ollama.complete(
+            messages, json_mode=params["json_mode"],
+            num_predict=params["ollama_num_predict"],
+            temperature=params["temperature"], model=model)
+        self._record(kind, result)
+        return result
+
+    def info(self) -> dict:
+        """For the Brain chip popover. Never includes the API key."""
+        return {"mode": self.mode(),
+                "cloud_model": getattr(self.config, "cloud_model", ""),
+                "circuit": self.circuit_state(),
+                "calls": list(self.history)}

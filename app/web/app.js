@@ -130,7 +130,7 @@ function appendDevlog(entry) {
 
 /* ---------------------------------------------------------------- chips */
 function setChips(chips) {
-  for (const key of ["model", "mic", "voice"]) {
+  for (const key of ["brain", "model", "mic", "voice"]) {
     const chip = $("#chip-" + key);
     const data = chips && chips[key];
     if (!chip || !data) continue;
@@ -289,6 +289,25 @@ function settingsHtml(s) {
     <div class="form-row"><label>Animation quality</label>
       ${selectHtml("animation_quality", s.animation_quality, ["low", "medium", "high"])}</div>
 
+    <h4 class="settings-section">Cloud brain</h4>
+    <div class="form-row"><label>Cloud brain (faster, needs internet)</label>
+      ${selectHtml("brain_mode", s.brain_mode, ["hybrid", "local_only"])}</div>
+    <p class="settings-hint">Hybrid sends transcribed text to Groq for fast
+      replies. Audio and files never leave this PC. Local-only keeps
+      everything on this machine.</p>
+    <div class="form-row"><label>Groq API key
+      ${s.groq_key_set ? `(saved: ${esc(s.groq_key_masked)})` : ""}</label>
+      <input id="set-groq_api_key" type="password" value=""
+             placeholder="${s.groq_key_set ? "leave empty to keep the saved key"
+                          : "gsk_... — free key at console.groq.com"}"></div>
+    ${s.groq_key_set ? "" : `<p class="settings-hint">No key yet — hybrid mode
+      is inactive. Get a free key at console.groq.com, paste it here, save.</p>`}
+    <div class="form-row"><label>Cloud model</label>
+      <input id="set-cloud_model" value="${esc(s.cloud_model || "")}"></div>
+    <div class="form-row"><label>Cloud timeout (seconds)</label>
+      <input id="set-cloud_timeout_s" type="number" step="0.5" min="2" max="30"
+             value="${esc(s.cloud_timeout_s || 8)}"></div>
+
     <h4 class="settings-section">Local model</h4>
     <div class="form-row"><label>Ollama URL</label>
       <input id="set-ollama_url" value="${esc(s.ollama_url || "")}"></div>
@@ -383,6 +402,11 @@ function collectSettings() {
     ollama_model: val("ollama_model"),
     chat_model: val("chat_model"),
     ollama_timeout: parseInt(val("ollama_timeout"), 10) || 20,
+    brain_mode: val("brain_mode"),
+    cloud_model: val("cloud_model"),
+    cloud_timeout_s: parseFloat(val("cloud_timeout_s")) || 8,
+    // key only travels when the user actually typed one (never the mask)
+    ...(val("groq_api_key") ? { groq_api_key: val("groq_api_key") } : {}),
     faster_whisper_model: val("faster_whisper_model"),
     stt_language: val("stt_language"),
     silence_seconds: parseFloat(val("silence_seconds")) || 1.2,
@@ -561,6 +585,24 @@ document.addEventListener("DOMContentLoaded", () => {
       else if (nav === "conversations") call("get_history", 0)
         .then(rows => handlers.history({ rows }));
       // Skills / Automations / Memory are clean placeholders for now
+    });
+  });
+
+  $("#chip-brain").addEventListener("click", () => {
+    call("get_brain_info").then((info) => {
+      if (!info) return;
+      const rows = (info.calls || []).slice().reverse().map(c => `<tr>
+          <td class="dim">${esc(c.ts)}</td><td>${esc(c.provider)}</td>
+          <td>${esc(c.kind)}</td><td>${c.latency_ms} ms</td>
+          <td>${c.error ? "⚠ " + esc(c.error) : (c.failover ? "failover" : "✅")}</td>
+        </tr>`).join("");
+      openModal("Brain", `
+        <p>Mode: <b>${esc(info.mode)}</b> · Cloud model:
+           <b>${esc(info.cloud_model || "—")}</b> · Circuit:
+           <b>${esc(info.circuit)}</b></p>
+        <table><tr><th>When</th><th>Provider</th><th>Kind</th><th>Latency</th>
+          <th></th></tr>${rows || ""}</table>
+        ${rows ? "" : "<p class='dim'>No LLM calls yet this session.</p>"}`);
     });
   });
 
