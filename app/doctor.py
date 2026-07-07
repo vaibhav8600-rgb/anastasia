@@ -58,12 +58,14 @@ def run_doctor() -> int:
         ok &= _line(False, "Ollama not running — simple commands still work, "
                            "chat/reasoning needs it", warn=True)
 
-    from app.voice.tts_piper import piper_available, validate_piper_config
+    from app.voice.tts_piper import (piper_available, piper_setup_status,
+                                     validate_piper_config)
     if piper_available(config):
         piper_ok, piper_message = validate_piper_config(config, play=False)
         ok &= _line(piper_ok, piper_message, warn=not piper_ok)
     else:
-        _line(False, "Piper not configured, using Windows fallback", warn=True)
+        _, reason = piper_setup_status(config)
+        _line(False, f"Piper unavailable: {reason}", warn=True)
 
     if config.tts_backend == "kokoro":
         from app.voice.tts_kokoro import validate_kokoro_config

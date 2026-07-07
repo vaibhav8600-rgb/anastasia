@@ -61,10 +61,16 @@ primer built from your configured apps/folders. If recognition is weak, try
 Works out of the box with the built-in Windows voice. For a much more
 natural voice, install **Piper**:
 
-1. Download Piper for Windows: https://github.com/rhasspy/piper/releases
+1. Download **the standalone binary** `piper_windows_amd64.zip` from
+   https://github.com/rhasspy/piper/releases and extract it (e.g. to
+   `C:\tools\piper`). ⚠ Do **NOT** `pip install piper` — that installs an
+   unrelated Python package whose `piper.exe` crashes; Anna rejects
+   venv/Scripts paths for exactly this reason.
 2. Download `en_US-hfc_female-medium.onnx` (or `en_US-amy-medium.onnx`)
    plus its matching `.onnx.json`: https://huggingface.co/rhasspy/piper-voices
-3. Settings → Voice output → select both files → **Validate Piper**.
+3. Settings → Voice output → select the extracted `piper.exe` and both voice
+   files → **Validate Piper** (synthesizes a real test phrase; also re-enables
+   Piper if it was auto-benched after failures).
 
 Replies are synthesized sentence-by-sentence so speaking begins without
 waiting for the entire response. An optional Kokoro ONNX setup card is also
@@ -100,6 +106,8 @@ python app\main.py --doctor   # health check
 | Anna hears herself / transcribes her own voice | Can't happen by design (half-duplex gate mutes the mic during playback +0.4 s). If you use external speakers at high volume and see it anyway, file an issue with the Developer Tools log |
 | Voice input does nothing | Settings → Voice input → Test microphone; check the Mic chip in the top bar |
 | Robotic voice | Configure Piper (section 3 above) |
+| "Voice: Windows fallback (Piper error)" chip | Piper failed twice and was benched for the session. Fix the paths (binary, not pip!) and press Validate Piper. Full errors: `app/data/tts_errors.log` |
+| Piper crashes with `sys.exit(main())` | You configured a pip-installed `piper.exe`. Use the standalone binary from github.com/rhasspy/piper/releases |
 | Window doesn't open | Install the WebView2 runtime (link above) |
 | Wake word warning | `pip install openwakeword`, then re-enable the toggle |
 

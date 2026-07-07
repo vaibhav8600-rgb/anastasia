@@ -19,6 +19,16 @@ from app.voice import audio_gate, split_sentences
 
 _STOP = object()
 
+# Consecutive Piper synth failures before the backend is benched for the
+# session (spec 8B.2 — stops per-sentence retry spam).
+TTS_CIRCUIT_FAILURES = 2
+TTS_ERROR_LOG = Path(__file__).resolve().parents[1] / "data" / "tts_errors.log"
+
+
+def _short_error(exc) -> str:
+    """One line, max 200 chars — no multi-line tracebacks in the dev log."""
+    return " ".join(str(exc).split())[:200]
+
 
 def sapi_rate(rate: float) -> int:
     """Map a 0.5..2.0 speed multiplier onto SAPI's -10..10 scale."""
@@ -38,6 +48,9 @@ class SpeechOutput:
         self._cancel = threading.Event()
         self._proc = None            # active SAPI PowerShell process, if any
         self._proc_lock = threading.Lock()
+        self.piper_unhealthy = False        # TTS circuit breaker (session)
+        self._piper_failures = 0
+        self.on_tts_health_change = None    # callback() — chip refresh
         self._thread = threading.Thread(target=self._worker, daemon=True,
                                         name="anna-tts")
         self._thread.start()
@@ -99,7 +112,7 @@ class SpeechOutput:
             try:
                 self._speak(text)
             except Exception as e:
-                devlog.exception(e, context="TTS")
+                self._log_tts_error(e, context="TTS")
             finally:
                 if not self._cancel.is_set() and self._queue.empty():
                     # let room echo die before the mic reopens
@@ -108,17 +121,64 @@ class SpeechOutput:
                     audio_gate.speaking.clear()
                     self._notify(False)
 
+    # ------------------------------------------------ TTS circuit breaker
+    def _log_tts_error(self, exc, context: str = "TTS") -> None:
+        """Truncated one-liner to the dev log; full traceback to a file."""
+        devlog.error(f"{context}: {_short_error(exc)}")
+        try:
+            import traceback
+            TTS_ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with open(TTS_ERROR_LOG, "a", encoding="utf-8") as f:
+                f.write(f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')} {context}\n")
+                f.write("".join(traceback.format_exception(
+                    type(exc), exc, exc.__traceback__)))
+        except Exception:
+            pass
+
+    def _piper_failed(self, exc) -> None:
+        self._piper_failures += 1
+        if self._piper_failures >= TTS_CIRCUIT_FAILURES and not self.piper_unhealthy:
+            self.piper_unhealthy = True
+            devlog.warn(f"Piper disabled for this session after "
+                        f"{self._piper_failures} failures ({_short_error(exc)}) "
+                        "— using the Windows voice. Fix the paths in Settings "
+                        "and press Validate Piper to restore it.")
+            self._log_tts_error(exc, context="Piper (final failure)")
+            self._notify_tts_health()
+        else:
+            devlog.warn(f"Piper failed ({_short_error(exc)}); "
+                        "falling back to Windows voice.")
+
+    def _piper_succeeded(self) -> None:
+        self._piper_failures = 0
+
+    def reset_piper_circuit(self) -> None:
+        """Called after a successful re-probe (Validate Piper button)."""
+        if self.piper_unhealthy or self._piper_failures:
+            self._piper_failures = 0
+            self.piper_unhealthy = False
+            devlog.log("Piper circuit reset — Piper is back.")
+            self._notify_tts_health()
+
+    def _notify_tts_health(self) -> None:
+        if self.on_tts_health_change:
+            try:
+                self.on_tts_health_change()
+            except Exception:
+                pass
+
     # --------------------------------------------------------- backends
     def _speak(self, text: str) -> None:
         backend = self.config.tts_backend
         if backend == "auto":
             from app.voice.tts_piper import piper_available
-            if piper_available(self.config):
+            if piper_available(self.config) and not self.piper_unhealthy:
                 try:
                     self._speak_piper(text)
+                    self._piper_succeeded()
                     return
                 except Exception as e:
-                    devlog.warn(f"Piper failed ({e}); falling back to Windows voice.")
+                    self._piper_failed(e)
             self._speak_windows(text)
             return
         if backend == "piper":
@@ -126,11 +186,15 @@ class SpeechOutput:
             if not piper_available(self.config):
                 devlog.warn("Piper selected but setup is incomplete — staying silent.")
                 return
+            if self.piper_unhealthy:
+                self._speak_windows(text)
+                return
             try:
                 self._speak_piper(text)
+                self._piper_succeeded()
                 return
             except Exception as e:
-                devlog.warn(f"Piper failed ({e}); falling back to Windows voice.")
+                self._piper_failed(e)
                 self._speak_windows(text)
                 return
         if backend == "kokoro":

@@ -16,33 +16,48 @@ def piper_json_path(voice_path) -> Path:
     return voice.with_suffix(voice.suffix + ".json")
 
 
+PIP_PIPER_MESSAGE = (
+    "This looks like a pip-installed 'piper' package, which is not Piper TTS. "
+    "Download piper_windows_amd64.zip from github.com/rhasspy/piper/releases "
+    "and point this at the extracted piper.exe.")
+
+
+def looks_like_pip_piper(path) -> bool:
+    """True for Python entry-point stubs (venv/Scripts/piper.exe) — those
+    crash with 'sys.exit(main())' tracebacks; only the standalone C++ binary
+    from github.com/rhasspy/piper works."""
+    parts = [p.lower().rstrip("\\/") for p in Path(str(path or "")).parts]
+    if not parts:
+        return False
+    dirs = parts[:-1]
+    return ".venv" in dirs or "venv" in dirs or (dirs and dirs[-1] == "scripts")
+
+
 def _resolve_piper_exe(config) -> Path | None:
+    """Only the configured path or a non-venv PATH entry. Never fall back to
+    a venv Scripts stub — that's the pip package, not Piper TTS."""
     configured = (config.piper_exe or "").strip()
     if configured:
         exe = Path(configured)
-        if exe.is_file():
+        if exe.is_file() and not looks_like_pip_piper(exe):
             return exe
-    if shutil.which("piper"):
-        return Path(shutil.which("piper"))
-    venv_scripts = Path(getattr(config, "_venv_scripts", "")) if getattr(config, "_venv_scripts", None) else None
-    if venv_scripts and venv_scripts.is_dir():
-        candidate = venv_scripts / "piper.exe"
-        if candidate.is_file():
-            return candidate
-    project_root = Path(__file__).resolve().parents[1]
-    for candidate in [
-        project_root / ".venv" / "Scripts" / "piper.exe",
-        project_root.parent / ".venv" / "Scripts" / "piper.exe",
-    ]:
-        if candidate.is_file():
-            return candidate
+        return None
+    which = shutil.which("piper")
+    if which and not looks_like_pip_piper(which):
+        return Path(which)
     return None
 
 
 def piper_setup_status(config) -> tuple[bool, str]:
+    configured = (config.piper_exe or "").strip()
+    if configured and looks_like_pip_piper(configured):
+        return False, PIP_PIPER_MESSAGE
     exe = _resolve_piper_exe(config)
     if exe is None:
-        return False, "Piper executable not found. Install piper-tts or select piper.exe in Voice settings."
+        return False, ("Piper executable not found. Download the standalone "
+                       "binary (piper_windows_amd64.zip) from "
+                       "github.com/rhasspy/piper/releases — do NOT pip "
+                       "install piper — and select piper.exe in Voice settings.")
     voice = Path(config.piper_voice or "")
     if not config.piper_voice or not voice.is_file():
         return False, "Piper executable found, but the .onnx voice file is still missing. Select a voice in Voice settings."
@@ -56,7 +71,8 @@ def piper_available(config) -> bool:
     return piper_setup_status(config)[0]
 
 
-def synthesize_piper(text: str, config, wav_path: Path) -> None:
+def synthesize_piper(text: str, config, wav_path: Path,
+                     timeout: float = 60) -> None:
     ok, message = piper_setup_status(config)
     if not ok:
         raise FileNotFoundError(message)
@@ -68,7 +84,7 @@ def synthesize_piper(text: str, config, wav_path: Path) -> None:
          "--output_file", str(wav_path),
          "--length_scale", str(round(length_scale, 2))],
         input=text.encode("utf-8"), capture_output=True,
-        timeout=60, creationflags=creation)
+        timeout=timeout, creationflags=creation)
     if proc.returncode != 0 or not wav_path.is_file():
         error = (proc.stderr or proc.stdout or b"Piper produced no audio")
         raise RuntimeError(error.decode("utf-8", errors="replace")[:300])
@@ -83,7 +99,8 @@ def validate_piper_config(config, play: bool = False) -> tuple[bool, str]:
     """Run the executable and load the selected voice with a real phrase."""
     wav_path = _temp_wav("anna_piper_test")
     try:
-        synthesize_piper("Hi, it's Anna. Piper is ready.", config, wav_path)
+        synthesize_piper("Hi, it's Anna. Piper is ready.", config, wav_path,
+                         timeout=10)
         with wave.open(str(wav_path), "rb") as audio:
             if audio.getnframes() <= 0 or audio.getframerate() <= 0:
                 raise RuntimeError("Piper created an empty WAV file.")

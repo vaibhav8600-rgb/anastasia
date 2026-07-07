@@ -59,6 +59,7 @@ class Controller:
         if ui is None:
             raise ValueError("Controller requires a ui (UIBridge or test fake).")
         self.ui = ui
+        self._background_checks = autostart  # tests: no health-check threads
 
         self.pipeline = CommandPipeline(
             config=self.config, agent=self.agent, history=self.history,
@@ -66,6 +67,8 @@ class Controller:
         if hasattr(self.agent, "brain"):
             # live Brain chip updates on failover / circuit transitions
             self.agent.brain.on_state_change = self._on_brain_state
+        # live Voice chip update when the TTS circuit benches/restores Piper
+        self.speech.on_tts_health_change = self._on_brain_state
 
         if autostart:
             self._register_hotkey()
@@ -193,10 +196,20 @@ class Controller:
         if not self._mic_ok:
             devlog.warn("No microphone detected.")
             issues.append("No microphone found — voice input is disabled, but typing works.")
-        from app.voice.tts_piper import piper_available
+        from app.voice.tts_piper import piper_available, validate_piper_config
         self._piper_ok = piper_available(self.config)
         if not self._piper_ok:
             devlog.warn("Piper voice not configured — using the built-in Windows voice.")
+        elif self.config.tts_backend in ("auto", "piper"):
+            # Startup probe (spec 8B.1): only a real synthesized WAV counts.
+            probe_ok, probe_msg = validate_piper_config(self.config, play=False)
+            devlog.log(f"Piper startup probe: {probe_msg}")
+            if probe_ok:
+                self.speech.reset_piper_circuit()
+            else:
+                self.speech.piper_unhealthy = True
+                issues.append("Piper isn't working (details in Developer Tools) "
+                              "— using the Windows voice until it validates.")
         from app.voice.tts_kokoro import kokoro_available
         self._kokoro_ok = kokoro_available(self.config)
 
@@ -222,9 +235,13 @@ class Controller:
             voice_label, voice_state = \
                 f"Voice: Kokoro · {self.config.kokoro_voice}", "ok"
         elif backend in ("auto", "piper") and getattr(self, "_piper_ok", False):
-            stem = Path(self.config.piper_voice).stem
-            stem = re.sub(r"^(?:en_[A-Z]{2}-)?|-(?:low|medium|high)$", "", stem)
-            voice_label, voice_state = f"Voice: Piper · {stem}", "ok"
+            if getattr(self.speech, "piper_unhealthy", False):
+                voice_label, voice_state = \
+                    "Voice: Windows fallback (Piper error)", "warn"
+            else:
+                stem = Path(self.config.piper_voice).stem
+                stem = re.sub(r"^(?:en_[A-Z]{2}-)?|-(?:low|medium|high)$", "", stem)
+                voice_label, voice_state = f"Voice: Piper · {stem}", "ok"
         elif backend == "off":
             voice_label, voice_state = "Voice: Off", "warn"
         elif backend in ("piper", "kokoro"):
@@ -255,7 +272,8 @@ class Controller:
     def _on_recheck(self) -> None:
         devlog.log("Recheck requested from the setup card.")
         self._ui(self.ui.hide_setup_card)
-        threading.Thread(target=self.run_health_checks, daemon=True).start()
+        if self._background_checks:
+            threading.Thread(target=self.run_health_checks, daemon=True).start()
 
     @staticmethod
     def _warm_imports() -> None:
@@ -600,7 +618,8 @@ class Controller:
             if self.config.tts_backend == "kokoro" and not kokoro_available(self.config):
                 self.show_info("Kokoro is selected but its package or model files "
                                "are missing — check the setup card.")
-            threading.Thread(target=self.run_health_checks, daemon=True).start()
+            if self._background_checks:
+                threading.Thread(target=self.run_health_checks, daemon=True).start()
 
     # ------------------------------------------------------- settings tests
     def _test_result(self, kind: str, ok: bool, message: str) -> None:
@@ -630,11 +649,17 @@ class Controller:
             return ""
 
     def validate_piper(self) -> None:
+        """Settings button: re-probe Piper; success restores a benched
+        backend (TTS circuit breaker reset)."""
         def worker():
             from app.voice.tts_piper import validate_piper_config
             ok, message = validate_piper_config(self.config, play=True)
             self._test_result("piper", ok, message)
             self._piper_ok = ok
+            if ok:
+                self.speech.reset_piper_circuit()
+            else:
+                self.speech.piper_unhealthy = True
             self._push_chips(self.chips.get("model", {}).get("state", "offline"))
         threading.Thread(target=worker, daemon=True).start()
 
