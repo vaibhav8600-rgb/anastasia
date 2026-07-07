@@ -1,5 +1,26 @@
 # HANDOFF — Anastasia (Anna) overhaul
 
+> **Phase 9A (streaming STT) DONE, awaiting approval + user's Deepgram key
+> for live numbers.** New: app/voice/stt_providers.py — STTResult,
+> DeepgramSTT (WebSocket-client, nova-2, interim_results, endpointing=300;
+> _connect() isolated for test mocking; DeepgramStream._handle_message parses
+> Deepgram JSON -> on_partial/on_final), WhisperSTT (batch fallback),
+> STTRouter (mode()/use_streaming()/circuit breaker 3-fails-120s like the
+> brain; masked key; env DEEPGRAM_API_KEY wins). DataClass.LIVE_AUDIO_STREAM
+> added (NEVER to brain; Deepgram-only via stt_stream_allowed hard gate).
+> Recorder.set_frame_observer feeds live PCM to Deepgram AND still buffers
+> for the Whisper safety net. Controller: toggle_mic branches on
+> use_streaming; _begin/_finish/_end_streaming_stt, _on_stt_partial/final/
+> error; final routes via pipeline.submit same as Whisper; failure/no-final
+> falls back to _finish_recording (Whisper on buffer); socket closes when mic
+> closes / on cancel / on shutdown. UI: body.stt-streaming (magenta mic ring)
+> + #stt-streaming-badge + #stt-interim (greyed live transcript); events
+> stt_streaming/stt_interim. Settings: stt_mode select + masked Deepgram key
+> + privacy note. config: stt_mode(local)/deepgram_api_key/deepgram_model
+> (nova-2). requirements: websocket-client. 212 tests (10 new, WS mocked).
+> Next: 9B streamed LLM->TTS, 9C continuous hands-free, 9D full-loop measure.
+
+
 > **Phase 8 COMPLETE (8A-8D). 202 tests passing.** 8D: TTS delay root-caused
 > and fixed — `python -m piper` per sentence cost 4.6s each (interpreter +
 > onnxruntime + model load repeated); now an in-process warm PiperVoice

@@ -48,11 +48,15 @@ class Controller:
         self.recorder = Recorder(self.config)
         self.speech = SpeechOutput(self.config,
                                    on_speaking_changed=self._on_speaking_changed)
+        from app.voice.stt_providers import STTRouter
+        self.stt_router = STTRouter(self.config)
+        self._active_stream = None         # live Deepgram session, if any
 
         self.wake_listener = None
         self._wake_warned = False          # one clean warning per session
         self._mic_lock = threading.Lock()
         self._stt_generation = 0           # bumped to drop stale STT results
+        self._stream_generation = 0
         self._record_source = "voice"
         self._low_mic_warned = False
         self.last_state = "ready"          # for full_state re-hydration
@@ -379,25 +383,116 @@ class Controller:
                 if self.pipeline.is_processing_command:
                     self.show_info("One moment — I'm finishing the last command.")
                     return
+                streaming = self.stt_router.use_streaming()
                 try:
+                    if streaming:
+                        self._begin_streaming_stt()
                     self.recorder.start(on_auto_stop=lambda: self._ui(self.toggle_mic))
                 except MicrophoneError as e:
+                    self._end_streaming_stt()
                     self.show_error(str(e))
                     return
+                except Exception as e:
+                    devlog.warn(f"Streaming STT failed to start ({e}); using local Whisper.")
+                    self._end_streaming_stt()
+                    self.recorder.start(on_auto_stop=lambda: self._ui(self.toggle_mic))
                 self._record_source = source
                 self.set_state("listening")
                 self._ui(self.ui.set_mic_active, True)
+                self._emit_streaming_indicator(streaming and self._active_stream is not None)
             else:
                 self._ui(self.ui.set_mic_active, False)
-                self.set_state("transcribing")
-                generation = self._stt_generation
-                threading.Thread(target=self._finish_recording,
-                                 args=(generation,), daemon=True).start()
+                self._emit_streaming_indicator(False)
+                if self._active_stream is not None:
+                    # Streaming: ask Deepgram to flush a final; on_final routes.
+                    # If nothing finalizes shortly, fall back to Whisper batch.
+                    self.set_state("transcribing")
+                    self._finish_streaming_stt()
+                else:
+                    self.set_state("transcribing")
+                    generation = self._stt_generation
+                    threading.Thread(target=self._finish_recording,
+                                     args=(generation,), daemon=True).start()
+
+    # ------------------------------------------------ streaming STT (9A)
+    def _begin_streaming_stt(self) -> None:
+        """Open a Deepgram session and feed it the recorder's live frames.
+        Raises on failure so the caller falls back to local Whisper."""
+        stream = self.stt_router.deepgram.start_stream(
+            on_partial=self._on_stt_partial,
+            on_final=self._on_stt_final,
+            on_error=self._on_stt_error)
+        self._active_stream = stream
+        self._stream_generation = self._stt_generation
+        self.recorder.set_frame_observer(stream.send_audio)
+        devlog.log("Streaming STT: Deepgram socket open (live audio).")
+
+    def _finish_streaming_stt(self) -> None:
+        stream = self._active_stream
+        if stream is None:
+            return
+        stream.finish()   # CloseStream -> Deepgram flushes a final result
+        # Safety net: if no final arrives quickly, transcribe the buffer locally.
+        gen = self._stt_generation
+
+        def fallback():
+            import time as _t
+            _t.sleep(1.5)
+            if self._active_stream is stream and not stream._final_sent \
+                    and gen == self._stt_generation:
+                devlog.warn("Deepgram sent no final in time — using local Whisper.")
+                self.stt_router.record_failure("no final on close")
+                self._end_streaming_stt()
+                self._finish_recording(gen)
+        threading.Thread(target=fallback, daemon=True).start()
+
+    def _end_streaming_stt(self) -> None:
+        self.recorder.set_frame_observer(None)
+        if self._active_stream is not None:
+            self._active_stream.close()
+            self._active_stream = None
+
+    def _on_stt_partial(self, text: str, is_endpoint: bool) -> None:
+        # Live interim transcript (greyed) — the "she's hearing me" feedback.
+        if hasattr(self.ui, "dispatch"):
+            self.ui.dispatch("stt_interim", {"text": text})
+
+    def _on_stt_final(self, result) -> None:
+        gen = self._stream_generation
+        self.stt_router.record_success()
+        self._end_streaming_stt()
+        if self.recorder.recording:
+            self.recorder.cancel()   # stop capture; we have the final
+        self._ui(self.ui.set_mic_active, False)
+        if hasattr(self.ui, "dispatch"):
+            self.ui.dispatch("stt_interim", {"text": ""})
+        if gen != self._stt_generation:
+            return
+        if not result.text:
+            self.show_info("I didn't catch that clearly. Try once more?")
+            self.set_state("ready")
+            return
+        self.pipeline.submit(result.text, source=self._record_source,
+                             confidence=result.confidence, stt_ms=result.stt_ms)
+
+    def _on_stt_error(self, result) -> None:
+        gen = self._stream_generation
+        self.stt_router.record_failure(result.error_detail)
+        self._end_streaming_stt()
+        if gen == self._stt_generation:
+            # Fall back to Whisper on the locally-buffered audio (safety net).
+            self._finish_recording(gen)
+
+    def _emit_streaming_indicator(self, active: bool) -> None:
+        if hasattr(self.ui, "dispatch"):
+            self.ui.dispatch("stt_streaming", {"active": bool(active)})
 
     def cancel_recording(self) -> None:
         """Discard any live recording (typed input supersedes voice)."""
-        if self.recorder.recording:
+        if self.recorder.recording or self._active_stream is not None:
             self._stt_generation += 1     # drop the in-flight result
+            self._end_streaming_stt()     # close the Deepgram socket if open
+            self._emit_streaming_indicator(False)
             self.recorder.cancel()
             self._ui(self.ui.set_mic_active, False)
             devlog.log("Recording cancelled (typed input took over).")
@@ -610,6 +705,11 @@ class Controller:
                 "groq_key_masked": self._masked_groq_key(),
                 "groq_key_set": self.agent.brain.groq.configured()
                                 if hasattr(self.agent, "brain") else False,
+                # Streaming STT — the raw key NEVER goes to the frontend.
+                "stt_mode": c.stt_mode,
+                "deepgram_model": c.deepgram_model,
+                "deepgram_key_masked": self.stt_router.masked_key(),
+                "deepgram_key_set": self.stt_router.deepgram.configured(),
             })
 
     def _masked_groq_key(self) -> str:
@@ -632,6 +732,7 @@ class Controller:
         "brain_mode": str, "cloud_model": str, "cloud_timeout_s": float,
         "allow_clipboard_to_cloud": bool,
         "hands_free_followup": bool,
+        "stt_mode": str, "deepgram_model": str,
     }
     _SETTINGS_CHOICES = {
         "animation_quality": {"low", "medium", "high"},
@@ -640,6 +741,7 @@ class Controller:
         "faster_whisper_model": {"tiny", "base", "base.en", "small", "small.en"},
         "stt_language": {"auto", "en", "hi", "mr"},
         "brain_mode": {"hybrid", "local_only"},
+        "stt_mode": {"streaming", "local"},
     }
 
     def save_settings(self, settings: dict) -> None:
@@ -670,6 +772,12 @@ class Controller:
                     and key != self.config.groq_api_key:
                 self.config.groq_api_key = key
                 changed.append("groq_api_key (hidden)")
+        if "deepgram_api_key" in settings:
+            key = str(settings["deepgram_api_key"] or "").strip()
+            if "..." not in key and "•" not in key \
+                    and key != self.config.deepgram_api_key:
+                self.config.deepgram_api_key = key
+                changed.append("deepgram_api_key (hidden)")
         if changed:
             self.config.save()
             devlog.log(f"Settings changed: {', '.join(changed)}")
@@ -812,6 +920,7 @@ class Controller:
             if self.wake_listener:
                 self.wake_listener.stop()
                 self.wake_listener = None
+            self._end_streaming_stt()
             if self.recorder.recording:
                 self.recorder.cancel()
             self.speech.shutdown()

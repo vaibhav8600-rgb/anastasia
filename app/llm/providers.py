@@ -34,10 +34,12 @@ class DataClass(Enum):
     CLIPBOARD = "clipboard"            # cloud only with explicit opt-in
     FILE_CONTENT = "file_content"      # NEVER cloud
     SCREENSHOT = "screenshot"          # NEVER cloud
-    AUDIO = "audio"                    # NEVER cloud
+    AUDIO = "audio"                    # NEVER cloud (batch recording)
+    LIVE_AUDIO_STREAM = "live_audio_stream"  # Deepgram STT only, streaming mode
 
 
-NEVER_CLOUD = {DataClass.FILE_CONTENT, DataClass.SCREENSHOT, DataClass.AUDIO}
+NEVER_CLOUD = {DataClass.FILE_CONTENT, DataClass.SCREENSHOT, DataClass.AUDIO,
+               DataClass.LIVE_AUDIO_STREAM}  # never to the BRAIN (Groq/Ollama)
 
 
 class PrivacyViolation(Exception):

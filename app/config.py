@@ -101,6 +101,13 @@ class AppConfig(BaseModel):
     # STT
     stt: STTConfig = Field(default_factory=STTConfig)
     stt_backend: str = "faster_whisper"  # "faster_whisper" | "whisper_cpp"
+    # Streaming STT (Deepgram, optional). Key also via env DEEPGRAM_API_KEY
+    # (env wins); never logged, never sent to the frontend (masked in Settings).
+    # "streaming" sends live mic audio to Deepgram while the mic is open;
+    # "local" keeps all audio on-device (default until a key is added).
+    stt_mode: str = "local"              # "streaming" | "local"
+    deepgram_api_key: str = ""
+    deepgram_model: str = "nova-2"
     faster_whisper_model: str = "base"   # tiny | base | small ...
     whisper_cpp_exe: str = ""            # path to whisper.cpp main/whisper-cli exe
     whisper_cpp_model: str = ""          # path to ggml model file

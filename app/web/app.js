@@ -324,7 +324,9 @@ function settingsHtml(s) {
       <li>Instant commands (open apps, screenshots…) never use any AI model.</li>
       <li>Hybrid mode sends only your transcribed/typed text and recent chat
           turns to Groq.</li>
-      <li>Files, screenshots and raw microphone audio NEVER leave this PC.</li>
+      <li>Files, screenshots and batch recordings NEVER leave this PC.</li>
+      <li>Streaming speech (below) sends live mic audio to Deepgram while the
+          mic is open; local mode keeps all audio on-device.</li>
       <li>Clipboard text stays local unless you enable the toggle below.</li>
       <li>Local-only mode sends nothing anywhere, ever.</li>
     </ul>
@@ -352,6 +354,19 @@ function settingsHtml(s) {
     <button class="ghost-btn" id="test-model">Test model</button>
 
     <h4 class="settings-section">Voice input (microphone &amp; speech-to-text)</h4>
+    <div class="form-row"><label>Speech recognition</label>
+      ${selectHtml("stt_mode", s.stt_mode, ["streaming", "local"])}</div>
+    <p class="settings-hint">Streaming (Deepgram) is much faster — a final
+      transcript ~0.3s after you stop, vs several seconds locally — but sends
+      live mic audio to Deepgram while the mic is open. Local (Whisper) keeps
+      all audio on this PC and is the automatic fallback if streaming fails.</p>
+    <div class="form-row"><label>Deepgram API key
+      ${s.deepgram_key_set ? `(saved: ${esc(s.deepgram_key_masked)})` : ""}</label>
+      <input id="set-deepgram_api_key" type="password" value=""
+             placeholder="${s.deepgram_key_set ? "leave empty to keep the saved key"
+                          : "needed for streaming — free key at deepgram.com"}"></div>
+    ${s.deepgram_key_set ? "" : `<p class="settings-hint">No key yet — streaming
+      is inactive and Anna uses local Whisper. Get a free key at deepgram.com.</p>`}
     <div class="form-row"><label>Microphone</label>
       ${selectHtml("microphone_device", s.microphone_device || "",
         s.microphone_options || [{ id: "", label: "System default microphone" }])}</div>
@@ -441,6 +456,8 @@ function collectSettings() {
     hands_free_followup: !!$("#set-hands_free_followup")?.checked,
     // key only travels when the user actually typed one (never the mask)
     ...(val("groq_api_key") ? { groq_api_key: val("groq_api_key") } : {}),
+    stt_mode: val("stt_mode"),
+    ...(val("deepgram_api_key") ? { deepgram_api_key: val("deepgram_api_key") } : {}),
     faster_whisper_model: val("faster_whisper_model"),
     microphone_device: val("microphone_device"),
     stt_language: val("stt_language"),
@@ -490,6 +507,20 @@ const handlers = {
   },
 
   mic: () => {},  // covered by state_change; kept for protocol completeness
+
+  // Streaming STT (9A): unmistakable indication that live mic audio is
+  // leaving the machine, plus the live interim transcript.
+  stt_streaming: (p) => {
+    const on = !!(p && p.active);
+    document.body.classList.toggle("stt-streaming", on);
+    const badge = $("#stt-streaming-badge");
+    if (badge) badge.classList.toggle("hidden", !on);
+    if (!on) { const i = $("#stt-interim"); if (i) i.textContent = ""; }
+  },
+  stt_interim: (p) => {
+    const el = $("#stt-interim");
+    if (el) el.textContent = (p && p.text) || "";
+  },
 
   prefs: (p) => setAnimQuality(p.animation_quality),
 

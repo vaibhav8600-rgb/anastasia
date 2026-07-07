@@ -156,10 +156,16 @@ class Recorder:
         self._on_auto_stop = None
         self._last_logged_device = None
         self._last_device_warning = None
+        self._frame_observer = None   # streaming STT: called per captured frame
 
     @property
     def recording(self) -> bool:
         return self._recording
+
+    def set_frame_observer(self, cb) -> None:
+        """cb(pcm_int16_bytes) receives each captured frame live (streaming
+        STT). The frames are STILL buffered locally as the Whisper safety net."""
+        self._frame_observer = cb
 
     def start(self, on_auto_stop=None) -> None:
         """Begin recording. on_auto_stop fires (once, from a worker thread)
@@ -210,6 +216,11 @@ class Recorder:
             return  # half-duplex: never capture Anna's own voice (sec 13a)
         import numpy as np
         self._frames.append(indata.copy())
+        if self._frame_observer is not None:   # feed streaming STT live
+            try:
+                self._frame_observer(bytes(indata))
+            except Exception:
+                pass
         now = time.time()
         cfg = self.config
         if cfg.silence_auto_stop and self._on_auto_stop is not None:
