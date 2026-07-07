@@ -9,3 +9,4 @@ app/data/memory.json
 *.wav
 app/data/voices/
 .claude/settings.local.json*
+app/data/piper/
