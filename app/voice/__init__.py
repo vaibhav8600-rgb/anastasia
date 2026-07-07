@@ -37,6 +37,56 @@ def split_sentences(text: str) -> list[str]:
     return [part.strip() for part in parts if part.strip()]
 
 
+# Abbreviations after which a "." is NOT a sentence end (streaming guard, 9B).
+_ABBREVIATIONS = ("mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st",
+                  "vs", "etc", "e.g", "i.e", "a.m", "p.m", "u.s", "ph.d")
+_BOUNDARY = re.compile(r"([.!?])(\s)")
+
+
+def _is_abbrev_end(buffer: str) -> bool:
+    """True if the char before the boundary punctuation is an abbreviation or
+    a digit (decimal like 3.5) — i.e. NOT a real sentence end."""
+    stub = buffer.rstrip()[:-1]           # drop the punctuation
+    if stub and stub[-1].isdigit():
+        return True
+    last = re.split(r"[\s(]", stub)[-1].lower()
+    return any(last.endswith(a) for a in _ABBREVIATIONS)
+
+
+class StreamingSentencer:
+    """Accumulates streamed tokens and yields complete sentences as their
+    boundaries arrive (9B). Abbreviation/decimal-aware so 'Dr. Smith' and
+    '3.5' don't split mid-sentence."""
+
+    def __init__(self):
+        self._buf = ""
+
+    def feed(self, token: str) -> list[str]:
+        """Add a token; return any newly-completed sentences."""
+        self._buf += token
+        out = []
+        search_from = 0
+        while True:
+            m = _BOUNDARY.search(self._buf, search_from)
+            if not m:
+                break
+            if _is_abbrev_end(self._buf[:m.end(1)]):
+                search_from = m.end(1)   # false boundary — keep scanning
+                continue
+            sentence = self._buf[:m.end(1)].strip()
+            if sentence:
+                out.append(sentence)
+            self._buf = self._buf[m.end():]
+            search_from = 0
+        return out
+
+    def flush(self) -> str:
+        """Return whatever remains (final partial sentence)."""
+        rest = self._buf.strip()
+        self._buf = ""
+        return rest
+
+
 def speak(text: str, config) -> None:
     """Speak text aloud. Never raises — TTS failure must not break the app."""
     if not text or not config.voice_enabled or config.tts_backend == "off":

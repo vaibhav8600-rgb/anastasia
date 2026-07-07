@@ -195,6 +195,7 @@ class CommandPipeline:
         started = time.perf_counter()
         transcript = norm.cleaned
         chat_indicator = None
+        self._streamed_reply = False
         try:
             self.ui.set_state("thinking")
 
@@ -249,7 +250,16 @@ class CommandPipeline:
                 trace.llm_used = True
                 t0 = time.perf_counter()
                 mode = classify_input_mode(norm.cleaned, self.config)
-                if mode == "chat" and hasattr(self.agent, "plan_chat"):
+                if mode == "chat" and hasattr(self.agent, "plan_chat_stream") \
+                        and self._streaming_chat_ok():
+                    trace.route = "chat"
+                    chat_indicator = self._start_chat_thinking()
+                    plan, handed_off = self._run_streaming_chat(norm.cleaned, trace)
+                    if handed_off:
+                        trace.route = "chat_handoff_command"
+                    else:
+                        self._streamed_reply = True   # already spoken sentence-by-sentence
+                elif mode == "chat" and hasattr(self.agent, "plan_chat"):
                     trace.route = "chat"
                     chat_indicator = self._start_chat_thinking()
                     plan, handed_off = self.agent.plan_chat(norm.cleaned)
@@ -341,9 +351,45 @@ class CommandPipeline:
         self.ui.show_anna(message)
         if log_history:
             self.history.log(transcript, plan, None, executed=False, result=message)
+        if self._streamed_reply:
+            return   # already spoken sentence-by-sentence during the stream
         t0 = time.perf_counter()
         self.speech.speak_async(message)
         trace.tts_ms = (time.perf_counter() - t0) * 1000
+
+    # ---------------------------------------------------- streamed chat (9B)
+    def _streaming_chat_ok(self) -> bool:
+        """Stream only when speech will actually play (else no benefit)."""
+        return (self.config.voice_enabled
+                and getattr(self.config, "tts_backend", "off") != "off")
+
+    def _run_streaming_chat(self, text: str, trace):
+        """Feed streamed sentences straight to the TTS queue so Anna starts
+        speaking sentence 1 while the brain generates sentence 2. Barge-in
+        (a new recording / cancelled speech) aborts the stream."""
+        self._stream_epoch = getattr(self, "_stream_epoch", 0) + 1
+        epoch = self._stream_epoch
+
+        def should_abort():
+            return epoch != self._stream_epoch
+
+        def on_sentence(sentence: str):
+            if should_abort():
+                return
+            self.speech.speak_async(sentence)   # warm Piper, ~0.2s/sentence
+
+        t0 = time.perf_counter()
+        plan, handed_off = self.agent.plan_chat_stream(
+            text, on_sentence=on_sentence, should_abort=should_abort)
+        trace.tts_ms = (time.perf_counter() - t0) * 1000
+        brain = getattr(self.agent, "brain", None)
+        if brain is not None and getattr(brain.last, "first_token_ms", 0):
+            devlog.log(f"llm_first_token_ms: {brain.last.first_token_ms:.0f}ms")
+        return plan, handed_off
+
+    def abort_stream(self) -> None:
+        """Barge-in hook: invalidate the in-flight chat stream."""
+        self._stream_epoch = getattr(self, "_stream_epoch", 0) + 1
 
     def _fail(self, transcript: str, message: str, trace) -> None:
         self.ui.set_state("error")

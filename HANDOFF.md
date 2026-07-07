@@ -1,5 +1,22 @@
 # HANDOFF — Anastasia (Anna) overhaul
 
+> **Phase 9B (streamed LLM->TTS) DONE.** GroqProvider.complete_stream (SSE,
+> stream:true, on_token/should_abort, first_token_ms/aborted on LLMResult);
+> BrainRouter.stream_chat (Groq stream -> Ollama non-streaming fallback, same
+> circuit breaker). app/voice StreamingSentencer (boundary + abbrev/decimal
+> guards: 'Dr.'/'3.5' don't split). Agent.plan_chat_stream emits sentences to
+> on_sentence, holds the {"handoff":"command"} sentinel back (never spoken;
+> whole-reply sentinel -> command handoff), same (plan,handoff) contract.
+> Pipeline: chat route uses _run_streaming_chat when voice on -> speaks each
+> sentence via speech.speak_async as it arrives; _streamed_reply flag makes
+> _respond skip re-speaking; _stream_epoch + abort_stream() for barge-in
+> (toggle_mic barge-in calls pipeline.abort_stream()+speech.cancel()).
+> COMMAND MODE NEVER STREAMS (plan_llm still complete(); test asserts
+> complete_stream unused + partial JSON unparseable). Live: first_token 576ms,
+> first_sentence_to_TTS 631ms (short reply; win scales with reply length).
+> 221 tests (9 new, SSE mocked). Next: 9C continuous hands-free, 9D measure.
+
+
 > **Phase 9A (streaming STT) DONE, awaiting approval + user's Deepgram key
 > for live numbers.** New: app/voice/stt_providers.py — STTResult,
 > DeepgramSTT (WebSocket-client, nova-2, interim_results, endpointing=300;

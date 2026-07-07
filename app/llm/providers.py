@@ -12,6 +12,7 @@ Architecture principles enforced here:
   * Rules never reach this module at all (router handles them first).
 """
 
+import json
 import os
 import threading
 import time
@@ -87,6 +88,8 @@ class LLMResult:
     error: str = ""       # "" | timeout | auth | rate_limit | network | bad_response
     error_detail: str = ""
     failover: bool = False
+    first_token_ms: float = 0.0   # streaming: time to first token (9B)
+    aborted: bool = False         # streaming: cancelled by barge-in
 
     @property
     def ok(self) -> bool:
@@ -173,6 +176,70 @@ class GroqProvider:
         return LLMResult(text=text, provider=self.name, latency_ms=elapsed,
                          prompt_tokens=usage.get("prompt_tokens", 0),
                          completion_tokens=usage.get("completion_tokens", 0))
+
+    def complete_stream(self, messages, *, max_tokens: int, temperature: float,
+                        timeout_s: float, on_token, should_abort=None,
+                        payload_classes=None) -> LLMResult:
+        """Stream chat tokens (chat mode only). Calls on_token(delta) as text
+        arrives; stops early if should_abort() (barge-in). Never JSON mode —
+        command planning must NOT stream (safety). Isolated so tests mock the
+        SSE response via requests.post."""
+        allowed, reason = cloud_allowed(payload_classes, self.config)
+        if not allowed:
+            raise PrivacyViolation(reason)
+        payload = {"model": self.config.cloud_model, "messages": messages,
+                   "max_tokens": max_tokens, "temperature": temperature,
+                   "stream": True}
+        started = time.perf_counter()
+        try:
+            r = requests.post(
+                GROQ_URL, json=payload, stream=True, timeout=(3.05, timeout_s),
+                headers={"Authorization": f"Bearer {self.api_key()}"})
+        except requests.exceptions.Timeout:
+            return LLMResult(provider=self.name, error="timeout",
+                             error_detail=f"no answer within {timeout_s:.0f}s")
+        except requests.RequestException as e:
+            return LLMResult(provider=self.name, error="network",
+                             error_detail=type(e).__name__)
+        if r.status_code in (401, 403):
+            return LLMResult(provider=self.name, error="auth",
+                             error_detail="key rejected")
+        if r.status_code == 429:
+            return LLMResult(provider=self.name, error="rate_limit",
+                             error_detail=r.headers.get("retry-after", "?"))
+        if r.status_code >= 400:
+            return LLMResult(provider=self.name, error="bad_response",
+                             error_detail=f"HTTP {r.status_code}")
+
+        parts, first_ms, aborted = [], 0.0, False
+        try:
+            for raw in r.iter_lines():
+                if should_abort is not None and should_abort():
+                    aborted = True
+                    break
+                if not raw:
+                    continue
+                line = raw.decode("utf-8", "replace").strip() \
+                    if isinstance(raw, (bytes, bytearray)) else raw.strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    delta = json.loads(data)["choices"][0].get("delta", {}).get("content")
+                except (ValueError, KeyError, IndexError, TypeError):
+                    continue
+                if delta:
+                    if not first_ms:
+                        first_ms = (time.perf_counter() - started) * 1000
+                    parts.append(delta)
+                    on_token(delta)
+        finally:
+            r.close()
+        return LLMResult(text="".join(parts), provider=self.name,
+                         latency_ms=(time.perf_counter() - started) * 1000,
+                         first_token_ms=first_ms, aborted=aborted)
 
 
 class OllamaProvider:
@@ -321,6 +388,64 @@ class BrainRouter:
             num_predict=params["ollama_num_predict"],
             temperature=params["temperature"], model=model)
         self._record(kind, result)
+        return result
+
+    def stream_chat(self, messages: list, on_token, should_abort=None,
+                    model: str = None, payload_classes=None) -> LLMResult:
+        """Streamed chat (9B). Groq streams tokens via on_token; on cloud
+        failure or when streaming isn't available, falls back to a single
+        non-streaming local reply (on_token gets the whole text once). Chat
+        only — command planning never streams (safety)."""
+        if payload_classes is None:
+            payload_classes = {DataClass.TRANSCRIPT, DataClass.CHAT_CONTEXT}
+        self.last_data_classes = payload_classes
+        allowed, privacy_reason = cloud_allowed(payload_classes, self.config)
+        use_groq = self.mode() == "hybrid" and not self.circuit_open() and allowed
+        if self.mode() == "hybrid" and not allowed:
+            devlog.log(f"Privacy routing: {privacy_reason} — using the local brain.")
+
+        if use_groq:
+            result = self.groq.complete_stream(
+                messages, max_tokens=KIND_PARAMS["chat"]["groq_max_tokens"],
+                temperature=KIND_PARAMS["chat"]["temperature"],
+                timeout_s=getattr(self.config, "cloud_timeout_s", 8.0),
+                on_token=on_token, should_abort=should_abort,
+                payload_classes=payload_classes)
+            self._record("chat", result)
+            if result.ok or result.aborted:
+                with self._lock:
+                    if self._failures or self._open_until:
+                        self._failures = 0
+                        self._open_until = 0.0
+                        devlog.log("Brain circuit CLOSED — cloud brain healthy again.")
+                        self._notify()
+                return result
+            with self._lock:
+                self._failures += 1
+                if self._failures >= CIRCUIT_FAILURES and not self.circuit_open():
+                    self._open_until = time.monotonic() + CIRCUIT_COOLDOWN_S
+                    devlog.warn(f"Brain circuit OPEN for {CIRCUIT_COOLDOWN_S:.0f}s "
+                                f"after {self._failures} cloud failures.")
+                    self._notify()
+            devlog.warn(f"Cloud stream failed ({result.error}) — local brain.")
+            # fall through to local, non-streaming
+
+        # local (or fallback) — one shot, emit as a single "token"
+        try:
+            result = self.ollama.complete(
+                messages, json_mode=False,
+                num_predict=KIND_PARAMS["chat"]["ollama_num_predict"],
+                temperature=KIND_PARAMS["chat"]["temperature"],
+                timeout_s=15.0 if use_groq else None, model=model)
+        except OllamaError as e:
+            failed = LLMResult(provider="ollama", error="timeout",
+                               error_detail=str(e)[:120], failover=use_groq)
+            self._record("chat", failed)
+            raise BrainUnavailable(self.HONEST_FAILURE) from e
+        result.failover = use_groq
+        if should_abort is None or not should_abort():
+            on_token(result.text)
+        self._record("chat", result)
         return result
 
     def info(self) -> dict:

@@ -377,8 +377,10 @@ class Controller:
             if not self.recorder.recording:
                 if self.speech.speaking:
                     # Barge-in: pressing PTT while Anna talks cuts her off
-                    # and starts listening immediately (sec 13a).
-                    devlog.log("Barge-in: cancelling TTS to listen.")
+                    # and starts listening immediately (sec 13a). Also abort
+                    # any in-flight chat stream so Groq stops generating (9B).
+                    devlog.log("Barge-in: cancelling TTS + aborting stream.")
+                    self.pipeline.abort_stream()
                     self.speech.cancel()
                 if self.pipeline.is_processing_command:
                     self.show_info("One moment — I'm finishing the last command.")

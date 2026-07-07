@@ -384,6 +384,63 @@ class Agent:
         return ActionPlan(assistant_message=content, intent="no_action",
                           tool_name="no_action"), False
 
+    def plan_chat_stream(self, text: str, on_sentence, should_abort=None
+                         ) -> tuple[ActionPlan, bool]:
+        """Streamed chat (9B): emits complete sentences to on_sentence as the
+        brain generates them, so TTS can start on sentence 1. Returns the same
+        (ActionPlan, was_handoff) contract as plan_chat. The handoff sentinel
+        is held back (never spoken); if the whole reply is the sentinel we
+        re-enter structured command planning."""
+        from app.voice import StreamingSentencer
+        chat_model = self.config.chat_model or self.config.ollama_model
+        cloud = self.brain.mode() == "hybrid" and not self.brain.circuit_open()
+        turns = []
+        if callable(self.recent_chat_turns):
+            try:
+                turns = self.recent_chat_turns(10 if cloud else 4)
+            except Exception:
+                turns = []
+
+        sentencer = StreamingSentencer()
+        acc = {"text": "", "handoff_ruled_out": False, "emitted": False}
+
+        def handoff_possible(buf: str) -> bool:
+            stripped = buf.strip().strip("`").lstrip("json").strip()
+            return CHAT_HANDOFF.startswith(stripped[:len(CHAT_HANDOFF)]) \
+                and len(stripped) <= len(CHAT_HANDOFF)
+
+        def on_token(delta: str):
+            acc["text"] += delta
+            # Hold all emission until we can rule out the handoff sentinel
+            # (it arrives as the very first tokens if present).
+            if not acc["handoff_ruled_out"]:
+                if handoff_possible(acc["text"]):
+                    return
+                acc["handoff_ruled_out"] = True
+            for sentence in sentencer.feed(delta):
+                acc["emitted"] = True
+                on_sentence(sentence)
+
+        result = self.brain.stream_chat(
+            build_chat_messages(text, self.config, self.memory, history_turns=turns),
+            on_token=on_token, should_abort=should_abort, model=chat_model)
+
+        content = result.text.strip()
+        normalized = content.strip("` \r\n")
+        if normalized.startswith("json\n"):
+            normalized = normalized[5:].strip()
+        if normalized == CHAT_HANDOFF:
+            return self.plan_llm(text), True
+        # flush any trailing partial sentence that never hit a boundary
+        if acc["handoff_ruled_out"] and not (should_abort and should_abort()):
+            tail = sentencer.flush()
+            if tail:
+                on_sentence(tail)
+        if not content:
+            content = "I'm here — try me once more?"
+        return ActionPlan(assistant_message=content, intent="no_action",
+                          tool_name="no_action"), False
+
     def plan(self, raw_text: str) -> ActionPlan:
         """Rule-based first; LLM fallback (kept for compatibility)."""
         ruled = self.plan_rule(raw_text)
