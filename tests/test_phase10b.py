@@ -184,7 +184,8 @@ def tool_call_msg(name, args, call_id):
 def test_live_session_tool_roundtrip_through_validator(monkeypatch):
     """Server tool_call -> on_tool_call -> LOCAL validator -> whitelisted
     executor -> send_tool_response arrives back at the (fake) socket."""
-    config = make_config(gemini_api_key="AIzaTESTKEY123456789")
+    config = make_config(gemini_api_key="AIzaTESTKEY123456789",
+                         engine_mode="gemini_live", live_audio_consent=True)
     fake = FakeSession(script=[tool_call_msg("open_app",
                                              {"app_name": "notepad"}, "fc-9")])
     monkeypatch.setattr(GeminiLiveSession, "_connect",

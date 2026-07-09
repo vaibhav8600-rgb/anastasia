@@ -363,6 +363,40 @@ function settingsHtml(s) {
                           : "AIza... — key from aistudio.google.com"}"></div>
     <div class="form-row"><label>Gemini Live model (preview tier — may change)</label>
       <input id="set-gemini_live_model" value="${esc(s.gemini_live_model || "")}"></div>
+    <div class="form-row"><label>Live voice (HD)</label>
+      ${selectHtml("gemini_live_voice", s.gemini_live_voice || "Sulafat", [
+        { value: "Sulafat", label: "Sulafat — warm (default)" },
+        { value: "Aoede", label: "Aoede — breezy" },
+        { value: "Leda", label: "Leda — youthful" },
+        { value: "Vindemiatrix", label: "Vindemiatrix — gentle" },
+        { value: "Achernar", label: "Achernar — soft" },
+        { value: "Autonoe", label: "Autonoe — bright" },
+        { value: "Zephyr", label: "Zephyr — bright" },
+        { value: "Kore", label: "Kore — firm" },
+        { value: "Callirrhoe", label: "Callirrhoe — easy-going" },
+        { value: "Despina", label: "Despina — smooth" }])}</div>
+    <div class="form-row" style="flex-direction:row;align-items:center;gap:10px">
+      <input type="checkbox" id="set-live_affective_dialog"
+             ${s.live_affective_dialog !== false ? "checked" : ""} style="width:auto">
+      <label for="set-live_affective_dialog" style="margin:0">
+        Emotion-aware dialog where the model supports it (2.5 Live models;
+        the 3.1 voice is already emotion-aware natively).</label>
+    </div>
+    <div class="form-row"><label>Live pricing — $/min audio in (editable; pricing changes)</label>
+      <input id="set-live_price_in_per_min" type="number" step="0.001" min="0"
+             value="${esc(s.live_price_in_per_min ?? 0.005)}"></div>
+    <div class="form-row"><label>Live pricing — $/min audio out</label>
+      <input id="set-live_price_out_per_min" type="number" step="0.001" min="0"
+             value="${esc(s.live_price_out_per_min ?? 0.018)}"></div>
+    <div class="form-row"><label>Auto-close an idle Live session after (seconds, 0 = never)</label>
+      <input id="set-live_idle_close_s" type="number" min="0" max="600"
+             value="${esc(s.live_idle_close_s ?? 60)}"></div>
+    <div class="form-row"><label>Monthly soft cap in $ (warn only, never blocks; 0 = off)</label>
+      <input id="set-live_monthly_cap_usd" type="number" step="0.5" min="0"
+             value="${esc(s.live_monthly_cap_usd ?? 0)}"></div>
+    <p class="settings-hint">Estimated Gemini Live spend this month:
+      <b>$${Number(s.live_month_spend || 0).toFixed(2)}</b> (local estimate from
+      session audio minutes — check Google's billing console for the real number).</p>
     <div class="form-row" style="flex-direction:row;align-items:center;gap:10px">
       <input type="checkbox" id="set-live_audio_consent"
              ${s.live_audio_consent ? "checked" : ""} style="width:auto">
@@ -556,8 +590,14 @@ function collectSettings() {
     ...(val("groq_api_key") ? { groq_api_key: val("groq_api_key") } : {}),
     engine_mode: val("engine_mode"),
     gemini_live_model: val("gemini_live_model"),
+    gemini_live_voice: val("gemini_live_voice"),
     live_audio_consent: !!$("#set-live_audio_consent")?.checked,
     engine_rules_first: !!$("#set-engine_rules_first")?.checked,
+    live_affective_dialog: !!$("#set-live_affective_dialog")?.checked,
+    live_price_in_per_min: parseFloat(val("live_price_in_per_min")) || 0.005,
+    live_price_out_per_min: parseFloat(val("live_price_out_per_min")) || 0.018,
+    live_idle_close_s: Math.max(0, parseFloat(val("live_idle_close_s")) || 0),
+    live_monthly_cap_usd: Math.max(0, parseFloat(val("live_monthly_cap_usd")) || 0),
     ...(val("gemini_api_key") ? { gemini_api_key: val("gemini_api_key") } : {}),
     stt_mode: val("stt_mode"),
     ...(val("deepgram_api_key") ? { deepgram_api_key: val("deepgram_api_key") } : {}),
@@ -622,7 +662,50 @@ const handlers = {
     const on = !!(p && p.active);
     document.body.classList.toggle("live-streaming", on);
     const badge = $("#live-badge");
-    if (badge) badge.classList.toggle("hidden", !on);
+    if (badge) {
+      badge.classList.toggle("hidden", !on);
+      if (!on) badge.textContent = "● Live — audio streaming to Google";
+    }
+  },
+
+  // 10D.2: running session cost estimate in the Live badge + dev tools.
+  live_cost: (p) => {
+    const badge = $("#live-badge");
+    if (badge && p && !badge.classList.contains("hidden")) {
+      const mins = ((p.in_s || 0) + (p.out_s || 0)) / 60;
+      badge.textContent = `● Live — audio streaming to Google · ` +
+        `${mins.toFixed(1)} min · ~$${(p.usd || 0).toFixed(3)}`;
+    }
+  },
+
+  // 10D.1: first-run consent card — picking the engine is NOT consent.
+  live_consent: (p) => {
+    openModal("Enable Gemini Live?", `
+      <p>Gemini Live is Anna's premium voice engine — instant, natural
+      speech-to-speech. Before turning it on, know exactly what changes:</p>
+      <ul class="settings-hint" style="margin:10px 0 10px 18px">
+        <li><b>Your microphone streams to Google continuously</b> while the
+            mic is open — the whole conversation, not just single commands.</li>
+        <li><b>It's metered</b>: roughly $${(p && p.price_in || 0.005).toFixed(3)}/min
+            of your audio in and $${(p && p.price_out || 0.018).toFixed(3)}/min of
+            Anna's audio out (editable in Settings). The running cost shows
+            on screen, and idle sessions auto-close after
+            ${Math.round(p && p.idle_s || 60)}s.</li>
+        <li><b>Actions stay leashed</b>: every tool call is validated by
+            Anna's local safety rules and confirmations, same as always.</li>
+        <li><b>Pipeline and Local modes are unchanged</b> and keep audio
+            on-device — you can switch back anytime.</li>
+      </ul>
+      <div style="display:flex;gap:10px;margin-top:14px">
+        <button class="primary-btn" id="live-consent-yes">I understand — enable Live</button>
+        <button class="ghost-btn" id="live-consent-no">Not now</button>
+      </div>`);
+    $("#live-consent-yes").addEventListener("click", () => {
+      call("live_consent", true); closeModal();
+    });
+    $("#live-consent-no").addEventListener("click", () => {
+      call("live_consent", false); closeModal();
+    });
   },
 
   stt_streaming: (p) => {

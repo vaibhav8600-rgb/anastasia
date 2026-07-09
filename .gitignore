@@ -4,8 +4,12 @@ __pycache__/
 venv/
 .pytest_cache/
 app/data/history.sqlite
+app/data/history.sqlite-shm
+app/data/history.sqlite-wal
 app/data/config.json
 app/data/memory.json
+app/data/live_spend.json
+app/data/tts_errors.log
 *.wav
 app/data/voices/
 .claude/settings.local.json*

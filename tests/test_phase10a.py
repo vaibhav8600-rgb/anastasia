@@ -23,6 +23,10 @@ def _no_env_keys(monkeypatch):
 def live_config(**over):
     over.setdefault("gemini_api_key", "AIzaTESTKEY123456789")
     over.setdefault("live_stall_timeout_s", 20.0)
+    # 10D hard gate: a session only starts with the engine selected AND the
+    # explicit continuous-audio consent.
+    over.setdefault("engine_mode", "gemini_live")
+    over.setdefault("live_audio_consent", True)
     return make_config(**over)
 
 
@@ -214,7 +218,7 @@ def test_unavailable_without_key():
     ok, reason = gemini_live_available(make_config(gemini_api_key=""))
     assert not ok and "key" in reason.lower()
     with pytest.raises(GeminiLiveUnavailable):
-        GeminiLiveSession(make_config(gemini_api_key=""),
+        GeminiLiveSession(live_config(gemini_api_key=""),
                           on_audio_out=lambda b: None).start()
 
 

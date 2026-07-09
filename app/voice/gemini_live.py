@@ -57,6 +57,13 @@ def gemini_live_available(config) -> tuple[bool, str]:
     return True, f"Gemini Live ready ({config.gemini_live_model})."
 
 
+def affective_dialog_supported(model: str) -> bool:
+    """Verified 2026-07 (live-api/capabilities): enable_affective_dialog
+    needs the v1alpha API and a 2.5 native-audio Live model — Gemini 3.1
+    Flash Live rejects it (its voice is already emotion-aware natively)."""
+    return "2.5" in (model or "")
+
+
 class GeminiLiveSession:
     """One live conversation. Owns connect/stream/resume/teardown."""
 
@@ -90,6 +97,13 @@ class GeminiLiveSession:
 
     # ------------------------------------------------------------- public
     def start(self) -> None:
+        # 10D HARD GATE, first and always: continuous mic audio may reach
+        # Google only with the engine selected AND the explicit opt-in.
+        # No caller can stream live audio around this.
+        from app.llm.providers import PrivacyViolation, live_audio_allowed
+        allowed, why = live_audio_allowed(self.config)
+        if not allowed:
+            raise PrivacyViolation(f"Live audio to Google blocked: {why}")
         ok, reason = gemini_live_available(self.config)
         if not ok:
             raise GeminiLiveUnavailable(reason)
@@ -204,13 +218,22 @@ class GeminiLiveSession:
             kwargs["system_instruction"] = self.system_instruction
         if self.tools:
             kwargs["tools"] = self.tools
+        # 10D.3: emotion-aware responses where the model supports the flag.
+        if getattr(self.config, "live_affective_dialog", True) and \
+                affective_dialog_supported(self.config.gemini_live_model):
+            kwargs["enable_affective_dialog"] = True
         return types.LiveConnectConfig(**kwargs)
 
     def _connect(self, config_obj):
         """Return the SDK's async connect context manager. Isolated so tests
         can monkeypatch this with a fake session."""
         from google import genai
-        client = genai.Client(api_key=gemini_key(self.config))
+        if getattr(config_obj, "enable_affective_dialog", None):
+            # affective dialog is a v1alpha-only feature (verified 2026-07)
+            client = genai.Client(api_key=gemini_key(self.config),
+                                  http_options={"api_version": "v1alpha"})
+        else:
+            client = genai.Client(api_key=gemini_key(self.config))
         return client.aio.live.connect(model=self.config.gemini_live_model,
                                        config=config_obj)
 

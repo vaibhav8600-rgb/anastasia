@@ -60,6 +60,7 @@ _DEFAULT_MIGRATIONS = {
     "silence_seconds": (1.6, 1.2),
     "max_record_seconds": (30, 8),
     "stt_language": ("auto", "en"),
+    "gemini_live_voice": ("Kore", "Sulafat"),   # 10D: the warm HD voice
 }
 
 
@@ -105,9 +106,17 @@ class AppConfig(BaseModel):
     # tier — expect churn; editable in Settings.
     gemini_api_key: str = ""
     gemini_live_model: str = "gemini-3.1-flash-live-preview"
-    gemini_live_voice: str = "Kore"      # prebuilt HD voice; 10D makes this a picker
+    # HD voice, verified 2026-07 against the TTS voice list (native-audio
+    # Live models take the full set): Sulafat is the documented "Warm" one.
+    gemini_live_voice: str = "Sulafat"
+    live_affective_dialog: bool = True   # applied only on models that support it
     live_stall_timeout_s: float = 20.0   # mid-turn silence -> teardown + fallback
     live_half_duplex: bool = True        # drop mic frames while Anna's audio plays
+    # Cost transparency (10D): estimates only, editable because pricing moves.
+    live_price_in_per_min: float = 0.005
+    live_price_out_per_min: float = 0.018
+    live_idle_close_s: float = 60.0      # idle Live session auto-closes (0 = never)
+    live_monthly_cap_usd: float = 0.0    # soft cap: warn past this, never block (0 = off)
     # Conversation engine (10C). ALWAYS defaults to pipeline: Live streams
     # continuous mic audio to Google and bills per minute, so it additionally
     # requires the explicit live_audio_consent opt-in — never auto-on.

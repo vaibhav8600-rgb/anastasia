@@ -670,7 +670,10 @@ class Controller:
                           show_user=self.show_user,
                           show_anna=self.show_anna,
                           show_result=self.show_result,
-                          on_failure=self._on_live_failure)
+                          on_failure=self._on_live_failure,
+                          on_cost=self._on_live_cost,
+                          on_idle=self._on_live_idle,
+                          notify=self.show_info)
         self._live = live   # set before connect so a tap can abort it
 
         def worker():   # session connect blocks up to ~10s — never the GUI
@@ -737,10 +740,38 @@ class Controller:
             self.set_state("ready")
 
     def _emit_live_indicator(self, active: bool) -> None:
-        """Unmistakable 'audio is streaming to Google' badge (10C; 10D makes
-        it the full consent-grade indicator)."""
+        """Unmistakable 'audio is streaming to Google' badge (10C; 10D adds
+        the running session-cost estimate to it)."""
         if hasattr(self.ui, "dispatch"):
             self.ui.dispatch("live_streaming", {"active": bool(active)})
+
+    def _on_live_cost(self, payload: dict) -> None:
+        """~1/s from the live engine: session audio minutes + cost estimate
+        for the badge and dev tools (10D.2)."""
+        if hasattr(self.ui, "dispatch"):
+            self.ui.dispatch("live_cost", payload)
+
+    def _on_live_idle(self) -> None:
+        idle_s = float(getattr(self.config, "live_idle_close_s", 60.0) or 0.0)
+        self._end_live_conversation("idle auto-close")
+        self.show_info(f"Live session closed after {idle_s:.0f}s of quiet — "
+                       "tap the mic when you want me again.")
+
+    def live_consent(self, accepted) -> None:
+        """js_api: resolve the first-run Gemini Live consent card (10D.1)."""
+        if bool(accepted):
+            self.config.live_audio_consent = True
+            self.config.save()
+            devlog.log("Gemini Live consent granted (billing + continuous audio).")
+            self.show_info("Gemini Live enabled — tap the mic to start a "
+                           "live conversation.")
+        else:
+            self.config.engine_mode = "pipeline"
+            self.config.save()
+            devlog.log("Gemini Live consent declined — engine back to pipeline.")
+            self.show_info("No problem — staying on the pipeline. Audio keeps "
+                           "working exactly as before.")
+        self._refresh_chips()
 
     def _refresh_chips(self) -> None:
         self._push_chips(self.chips.get("model", {}).get("state", "offline"))
@@ -1183,6 +1214,14 @@ class Controller:
                 "gemini_key_set": self._gemini_key_set(),
                 "gemini_live_model": c.gemini_live_model,
                 "live_state_reason": self.engine_selector.last_reason,
+                # 10D: voice, affect, cost transparency
+                "gemini_live_voice": c.gemini_live_voice,
+                "live_affective_dialog": c.live_affective_dialog,
+                "live_price_in_per_min": c.live_price_in_per_min,
+                "live_price_out_per_min": c.live_price_out_per_min,
+                "live_idle_close_s": c.live_idle_close_s,
+                "live_monthly_cap_usd": c.live_monthly_cap_usd,
+                "live_month_spend": self._live_month_spend(),
             })
 
     def _masked_groq_key(self) -> str:
@@ -1199,6 +1238,14 @@ class Controller:
     def _gemini_key_set(self) -> bool:
         from app.voice.gemini_live import gemini_key
         return bool(gemini_key(self.config))
+
+    @staticmethod
+    def _live_month_spend() -> float:
+        try:
+            from app.voice.live_cost import month_spend
+            return round(month_spend(), 2)
+        except Exception:
+            return 0.0
 
     _SETTINGS_FIELDS = {
         "ollama_url": str, "ollama_model": str, "chat_model": str,
@@ -1219,6 +1266,9 @@ class Controller:
         "wake_word_backend": str, "wake_word_model": str,
         "engine_mode": str, "engine_rules_first": bool,
         "live_audio_consent": bool, "gemini_live_model": str,
+        "gemini_live_voice": str, "live_affective_dialog": bool,
+        "live_price_in_per_min": float, "live_price_out_per_min": float,
+        "live_idle_close_s": float, "live_monthly_cap_usd": float,
     }
     _SETTINGS_CHOICES = {
         "animation_quality": {"low", "medium", "high"},
@@ -1233,6 +1283,11 @@ class Controller:
         "wake_word_backend": {"whisper", "openwakeword"},
         "wake_word_model": {"tiny", "base", "small"},
         "engine_mode": {"gemini_live", "pipeline", "local"},
+        # Warm/female-leaning HD voices verified 2026-07 (full 30-voice TTS
+        # set works on native-audio Live models; this is a curated subset).
+        "gemini_live_voice": {"Sulafat", "Aoede", "Leda", "Vindemiatrix",
+                              "Achernar", "Autonoe", "Zephyr", "Kore",
+                              "Callirrhoe", "Despina"},
     }
 
     def save_settings(self, settings: dict) -> None:
@@ -1279,6 +1334,19 @@ class Controller:
             self.config.save()
             devlog.log(f"Settings changed: {', '.join(changed)}")
             self.show_info("Settings saved.")
+            # First-time Live enablement (10D.1): picking the engine is not
+            # consent — show the plain-language card and require an explicit
+            # yes before any audio can stream (the session hard-gates too).
+            if "engine_mode" in changed \
+                    and self.config.engine_mode == "gemini_live" \
+                    and not self.config.live_audio_consent \
+                    and hasattr(self.ui, "dispatch"):
+                self.ui.dispatch("live_consent", {
+                    "model": self.config.gemini_live_model,
+                    "price_in": self.config.live_price_in_per_min,
+                    "price_out": self.config.live_price_out_per_min,
+                    "idle_s": self.config.live_idle_close_s,
+                })
             self.speech.emit_levels = (self.config.animation_quality == "high")
             if hasattr(self.ui, "dispatch"):
                 self.ui.dispatch("prefs", {

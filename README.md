@@ -125,7 +125,52 @@ transcript ~0.3s after you stop, with a live interim transcript as you speak.
 first word". With streaming + Groq it's typically ~1–2s (the variable is the
 network round-trip to Groq; local warm-Piper TTS is ~0.25–0.5s).
 
-### 6. Run
+### 6. Gemini Live — the premium conversation engine (optional)
+
+Anna has **three conversation engines** (the top-bar **Engine** chip shows
+which one is active):
+
+| Engine | What it is | Speed | Needs | Privacy |
+|---|---|---|---|---|
+| **Gemini Live** (purple) | Native speech-to-speech over one WebSocket — no STT/LLM/TTS handoffs, emotion-aware HD voice, natural barge-in | sub-second | Gemini API key, internet, **billing + privacy opt-in** | **streams your mic to Google continuously while the mic is open**; metered per audio minute |
+| **Pipeline** (default) | The Phase-9 stack: Whisper/Deepgram → Groq/Ollama → Piper/Aura with layered fallbacks | ~1.5–2.5s/turn | nothing extra | audio leaves only if you chose streaming STT / Aura |
+| **Local** | Whisper → Ollama → Piper, forced | slowest | nothing, works offline | nothing ever leaves this PC |
+
+Setup: key from https://aistudio.google.com → Settings → Conversation engine →
+paste it (or `GEMINI_API_KEY` env var), pick **Gemini Live**, and accept the
+plain-language **consent card** (what streams, what it costs, how to leave).
+Selecting the engine alone is *not* consent — and the session itself
+hard-gates on both (`PrivacyViolation` otherwise), so nothing can stream
+around it. Model default: `gemini-3.1-flash-live-preview` (preview tier —
+Google renames these; editable in Settings if it churns).
+
+**How it behaves:**
+
+- Tap the mic once → one continuous conversation (the model handles
+  turn-taking, talk over her freely); tap again → everything closes.
+  While live: purple **Engine** chip with a pulsing dot, purple mic ring,
+  and a persistent **"● Live — audio streaming to Google · minutes · ~$"**
+  badge with the running session cost.
+- **Every tool call is still validated locally** — same safety rules,
+  same confirmation cards, same whitelist as every other engine. The cloud
+  model can only *request*; blocked tools aren't even declared to it.
+  Screenshots, files and clipboard keep their never-cloud/opt-in rules.
+- **Instant commands stay local**: "open paint" etc. run through the local
+  rule router immediately, even in Live mode (toggle in Settings).
+- **Any Live failure falls back to the pipeline in the same turn** — the
+  rolling mic buffer is transcribed locally so your sentence isn't lost.
+  3 failures open a circuit for 120s (pipeline handles everything), then a
+  probe re-enables Live. Offline skips Live entirely.
+- **Cost safety:** per-minute prices are editable (defaults ~$0.005 in /
+  $0.018 out — verify against Google's current pricing), a month-to-date
+  estimate shows in Settings, an optional monthly **soft cap warns** (never
+  blocks), and an idle session **auto-closes after 60s** of quiet so a
+  forgotten session can't bill silently. Sessions also close with the app.
+- **Voice:** warm HD voice **Sulafat** by default, picker in Settings.
+  Emotion-aware *affective dialog* is wired but only applies on 2.5-era
+  Live models (Gemini 3.1's voice is already emotion-aware natively).
+
+### 7. Run
 
 ```powershell
 python app\main.py            # the app
@@ -168,6 +213,10 @@ python app\main.py --doctor   # health check
 | Magenta mic ring / "streaming" badge | Normal in streaming mode — it means live mic audio is going to Deepgram. Switch Speech recognition to *local* to keep audio on-device |
 | Streaming stopped working | Deepgram failed 3× → the STT circuit routes to local Whisper for 120s, then auto-probes. Anna keeps working on local Whisper meanwhile |
 | Mic stays on between replies | Continuous Conversation mode is on. Say "stop listening", tap the mic, or toggle Conversation off |
+| "Engine: Pipeline (Live offline)" chip | Gemini Live is selected but unreachable (no key / no consent / offline / circuit open after 3 failures). Anna keeps working on the pipeline; Live auto-probes after 120s |
+| Purple mic ring / "Live — audio streaming to Google" badge | Normal in Live mode — continuous mic audio is going to Google and the session is metered. Tap the mic to end it; idle sessions auto-close |
+| Live session ends by itself mid-conversation | Either the ~15-min session cap hit without a resumption handle (rare; it normally resumes invisibly), the 20s stall watchdog fired, or the 60s idle auto-close — all fall back cleanly. See Developer Tools for which |
+| Live costs more than expected | Settings → Conversation engine shows the month-to-date estimate and editable per-minute prices; set a monthly soft cap to get warned. The estimate is local — Google's billing console is the source of truth |
 
 ## Windows installer
 

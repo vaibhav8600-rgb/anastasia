@@ -30,7 +30,8 @@ RULE_DEDUP_WINDOW_S = 15.0   # model tool call repeating a local rule -> skip
 class LiveEngine:
     def __init__(self, config, agent, history, pipeline, selector, *,
                  memory=None, show_user=None, show_anna=None,
-                 show_result=None, on_failure=None,
+                 show_result=None, on_failure=None, on_cost=None,
+                 on_idle=None, notify=None,
                  session_factory=None, player=None):
         self.config = config
         self.agent = agent
@@ -42,12 +43,16 @@ class LiveEngine:
         self.show_anna = show_anna or (lambda t: None)
         self.show_result = show_result or (lambda t, a: None)
         self.on_failure = on_failure or (lambda d: None)
+        self.on_cost = on_cost         # callback({in_s, out_s, usd}) ~1/s (10D)
+        self.on_idle = on_idle         # callback() — idle cap hit, close me
+        self.notify = notify or (lambda t: None)   # soft-cap warning line
         self._session_factory = session_factory
         self._player = player
 
         self.active = False
         self.session = None
         self.recorder = None
+        self._bridge = None
         self._out_q = queue.Queue()
         self._player_thread = None
         self._user_buf = ""
@@ -55,19 +60,21 @@ class LiveEngine:
         self._turn_rule_done = False
         self._recent_local = None      # (tool_name, monotonic) rule dedup
         self._healthy_reported = False
+        self._last_interaction = time.monotonic()
+        self._spend_recorded = False
         self._ended = threading.Event()
 
     # -------------------------------------------------------------- begin
     def begin(self, recorder) -> bool:
         """Connect and start streaming. False (with the failure recorded)
         if the session can't be established — the caller falls back."""
-        from app.llm.prompt_builder import persona_prompt
+        from app.llm.prompt_builder import live_persona_prompt
         try:
             factory = self._session_factory
             if factory is None:
                 from app.voice.gemini_live import GeminiLiveSession
                 factory = GeminiLiveSession
-            bridge = LiveToolBridge(
+            self._bridge = LiveToolBridge(
                 self.config, self.agent, self.history,
                 ask_confirmation=self._ask_confirmation,
                 skip_check=self._skip_check)
@@ -77,13 +84,13 @@ class LiveEngine:
                 on_input_transcript=self._on_input_transcript,
                 on_output_transcript=self._on_output_transcript,
                 on_interrupted=self._on_interrupted,
-                on_tool_call=bridge.handle_tool_call,
+                on_tool_call=self._on_tool_call,
                 on_closed=self._on_closed,
                 on_error=self._on_error,
-                system_instruction=persona_prompt(self.config, self.memory),
+                system_instruction=live_persona_prompt(self.config, self.memory),
                 tools=live_tool_declarations(self.config))
             self.session.start()
-            bridge.attach_session(self.session)
+            self._bridge.attach_session(self.session)
         except Exception as e:
             self.selector.record_failure(f"connect: {e}")
             self.session = None
@@ -93,9 +100,56 @@ class LiveEngine:
         self._player_thread = threading.Thread(
             target=self._drain_player, daemon=True, name="anna-live-out")
         self._player_thread.start()
+        self._last_interaction = time.monotonic()
         self.active = True
+        threading.Thread(target=self._tick_loop, daemon=True,
+                         name="anna-live-tick").start()
         devlog.log("Live conversation started (Gemini Live).")
         return True
+
+    def _on_tool_call(self, name, args, call_id) -> None:
+        self._last_interaction = time.monotonic()
+        self._bridge.handle_tool_call(name, args, call_id)
+
+    # --------------------------------------- cost + idle ticker (10D.2)
+    def _tick_loop(self) -> None:
+        """1/s: emit the running session cost, warn once past the monthly
+        soft cap (never block), and auto-close after the idle timeout so a
+        forgotten session can't bill silently."""
+        from app.voice.live_cost import month_spend, session_cost_usd
+        cap = float(getattr(self.config, "live_monthly_cap_usd", 0.0) or 0.0)
+        month_base = month_spend() if cap > 0 else 0.0
+        cap_warned = False
+        while not self._ended.wait(1.0):
+            stats = self.stats()
+            in_s = float(stats.get("audio_in_s", 0.0) or 0.0)
+            out_s = float(stats.get("audio_out_s", 0.0) or 0.0)
+            usd = session_cost_usd(in_s, out_s, self.config)
+            if self.on_cost:
+                try:
+                    self.on_cost({"in_s": round(in_s, 1),
+                                  "out_s": round(out_s, 1),
+                                  "usd": round(usd, 4)})
+                except Exception:
+                    pass
+            if cap > 0 and not cap_warned and month_base + usd >= cap:
+                cap_warned = True
+                self.notify(f"Heads up — Gemini Live spend this month is "
+                            f"about ${month_base + usd:.2f}, past your "
+                            f"${cap:.2f} soft cap. I'll keep working; "
+                            "it's just a warning.")
+            idle_s = float(getattr(self.config, "live_idle_close_s", 60.0)
+                           or 0.0)
+            if idle_s > 0 and self.active and \
+                    time.monotonic() - self._last_interaction >= idle_s:
+                devlog.log(f"Live session idle {idle_s:.0f}s — auto-closing "
+                           "so it can't bill silently.")
+                if self.on_idle:
+                    try:
+                        self.on_idle()
+                    except Exception:
+                        pass
+                return
 
     # ------------------------------------------------------------ audio in
     def _on_mic_frame(self, pcm16k: bytes) -> None:
@@ -115,6 +169,7 @@ class LiveEngine:
         if not self._healthy_reported:
             self._healthy_reported = True
             self.selector.record_success()   # first audio = session healthy
+        self._last_interaction = time.monotonic()
         self._out_q.put(pcm24k)
 
     def _drain_player(self) -> None:
@@ -143,6 +198,7 @@ class LiveEngine:
 
     # ---------------------------------------------------------- transcripts
     def _on_input_transcript(self, text: str) -> None:
+        self._last_interaction = time.monotonic()
         if self._anna_buf:
             self._flush_anna()               # previous reply is done
         if not self._user_buf:
@@ -267,6 +323,26 @@ class LiveEngine:
                 pass
         self._flush_user()
         self._flush_anna()
+        self._record_spend()
+
+    def _record_spend(self) -> None:
+        """Once per session: fold the estimate into month-to-date (10D.2)."""
+        if self._spend_recorded:
+            return
+        self._spend_recorded = True
+        try:
+            from app.voice.live_cost import add_month_spend, session_cost_usd
+            stats = self.stats()
+            in_s = float(stats.get("audio_in_s", 0.0) or 0.0)
+            out_s = float(stats.get("audio_out_s", 0.0) or 0.0)
+            usd = session_cost_usd(in_s, out_s, self.config)
+            if in_s or out_s:
+                total = add_month_spend(usd)
+                devlog.log(f"Live session cost ~${usd:.4f} "
+                           f"(in {in_s:.0f}s / out {out_s:.0f}s); "
+                           f"month-to-date ~${total:.2f}.")
+        except Exception:
+            pass
 
     def stats(self) -> dict:
         return self.session.stats() if self.session is not None else {}

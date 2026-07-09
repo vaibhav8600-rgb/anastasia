@@ -180,6 +180,10 @@ class JsApi:
         if isinstance(settings, dict):
             self._controller.save_settings(settings)
 
+    def live_consent(self, accepted) -> None:
+        """Resolve the first-run Gemini Live consent card (10D)."""
+        self._controller.live_consent(bool(accepted))
+
     def recheck(self) -> None:
         if self._bridge._on_recheck:
             self._bridge._on_recheck()

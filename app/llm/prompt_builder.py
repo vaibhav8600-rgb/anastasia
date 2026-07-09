@@ -103,6 +103,20 @@ def persona_prompt(config, memory) -> str:
     )
 
 
+def live_persona_prompt(config, memory) -> str:
+    """System instruction for a Gemini Live session (10D.3): the established
+    persona plus at most 3 SAFE memory lines (private_ keys and sensitive
+    entries are excluded by _chat_memory_lines, same rule as chat mode)."""
+    lines = _chat_memory_lines(memory)
+    memory_block = ("\nSafe memory:\n" + "\n".join(lines)) if lines else ""
+    return persona_prompt(config, memory) + memory_block + (
+        "\nYou can act on the PC only through your declared tools; some "
+        "need the user's on-screen approval first — say you're waiting for "
+        "it and be patient. If a tool is declined or blocked, accept that "
+        "gracefully and never retry on your own."
+    )
+
+
 def _tools_doc(config) -> str:
     apps = ", ".join(sorted(config.app_aliases.keys()))
     from pathlib import Path

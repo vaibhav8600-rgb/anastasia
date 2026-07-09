@@ -37,10 +37,15 @@ class DataClass(Enum):
     SCREENSHOT = "screenshot"          # NEVER cloud
     AUDIO = "audio"                    # NEVER cloud (batch recording)
     LIVE_AUDIO_STREAM = "live_audio_stream"  # Deepgram STT only, streaming mode
+    # Continuous bidirectional mic audio to Google (Phase 10D) — the largest
+    # privacy step in the project. Gemini Live sessions only, opt-in only;
+    # see live_audio_allowed() for the hard gate.
+    LIVE_AUDIO_BIDIRECTIONAL = "live_audio_bidirectional"
 
 
 NEVER_CLOUD = {DataClass.FILE_CONTENT, DataClass.SCREENSHOT, DataClass.AUDIO,
-               DataClass.LIVE_AUDIO_STREAM}  # never to the BRAIN (Groq/Ollama)
+               DataClass.LIVE_AUDIO_STREAM,
+               DataClass.LIVE_AUDIO_BIDIRECTIONAL}  # never to the BRAIN
 
 
 class PrivacyViolation(Exception):
@@ -58,6 +63,18 @@ def cloud_allowed(payload_classes, config) -> tuple[bool, str]:
     if DataClass.CLIPBOARD in classes and \
             not getattr(config, "allow_clipboard_to_cloud", False):
         return False, "clipboard kept local (opt-in is off)"
+    return True, ""
+
+
+def live_audio_allowed(config) -> tuple[bool, str]:
+    """10D hard gate for LIVE_AUDIO_BIDIRECTIONAL's ONLY consumer: a Gemini
+    Live session may stream continuous mic audio to Google exclusively when
+    the user picked the engine AND set the explicit billing/privacy opt-in.
+    Everything else in the app treats this class as never-cloud."""
+    if getattr(config, "engine_mode", "pipeline") != "gemini_live":
+        return False, "engine_mode is not gemini_live"
+    if not getattr(config, "live_audio_consent", False):
+        return False, "the continuous-audio consent is off"
     return True, ""
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
