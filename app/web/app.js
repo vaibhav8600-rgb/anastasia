@@ -360,7 +360,7 @@ function settingsHtml(s) {
       ${s.gemini_key_set ? `(saved: ${esc(s.gemini_key_masked)})` : ""}</label>
       <input id="set-gemini_api_key" type="password" value=""
              placeholder="${s.gemini_key_set ? "leave empty to keep the saved key"
-                          : "AIza... — key from aistudio.google.com"}"></div>
+                          : "key from aistudio.google.com (AIza... or AQ...)"}"></div>
     <div class="form-row"><label>Gemini Live model (preview tier — may change)</label>
       <input id="set-gemini_live_model" value="${esc(s.gemini_live_model || "")}"></div>
     <div class="form-row"><label>Live voice (HD)</label>
