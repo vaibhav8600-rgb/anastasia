@@ -31,13 +31,18 @@ def live_config(**over):
 
 
 class FakeSession:
-    """Mimics the google-genai live session: records sends, replays a script."""
+    """Mimics the google-genai live session: records sends; receive() is a
+    PER-TURN generator like the real SDK — each call yields one scripted
+    turn's messages, then ends (the connection stays open). Turns exhausted:
+    hold_open=True blocks (open but idle), hold_open=False returns instantly
+    with nothing (a closed socket)."""
 
-    def __init__(self, script=None, hold_open=True):
+    def __init__(self, script=None, turns=None, hold_open=True):
         self.sent_audio = []
         self.sent_text = []
         self.sent_tool_responses = []
-        self.script = list(script or [])
+        self.turns = [list(t) for t in (turns if turns is not None
+                                        else ([script] if script else []))]
         self.hold_open = hold_open
         self.exited = threading.Event()
 
@@ -51,10 +56,13 @@ class FakeSession:
         self.sent_tool_responses.append(function_responses)
 
     async def receive(self):
-        for msg in self.script:
-            yield msg
-        while self.hold_open:          # keep the session "open" until stopped
+        if self.turns:
+            for msg in self.turns.pop(0):
+                yield msg
+            return                     # turn complete — connection still open
+        while self.hold_open:          # open but idle
             await asyncio.sleep(0.02)
+        # hold_open False -> closed socket: end immediately, no messages
 
     class _CM:
         def __init__(self, outer): self.outer = outer
@@ -164,6 +172,60 @@ def test_session_resumption_on_time_limit_preserves_context(monkeypatch):
     assert session.resumption_handle == "HANDLE-42"
     assert calls["handles"][1] == "HANDLE-42"  # handle passed on reconnect
     assert session.active
+    session.close()
+
+
+# ---- one connection across turns (regression: composite replies) -----------------
+
+def test_multi_turn_conversation_stays_on_one_connection(monkeypatch):
+    """Regression (user-reported): receive() ends at EVERY turn_complete in
+    the SDK. That must NOT tear the connection down and resume — the resumed
+    checkpoint lags the just-delivered answer, so the model re-answered all
+    the old turns in one composite reply. Three turns ride ONE connection."""
+    turns = [[audio_msg(b"\x01\x01" * 2400)],
+             [audio_msg(b"\x02\x02" * 2400)],
+             [audio_msg(b"\x03\x03" * 2400)]]
+    played = []
+    session, fakes, calls = make_session(monkeypatch,
+                                         sessions=[FakeSession(turns=turns)],
+                                         on_audio_out=played.append)
+    session.start()
+    deadline = time.time() + 3
+    while len(played) < 3 and time.time() < deadline:
+        time.sleep(0.02)
+    assert len(played) == 3            # every turn's audio arrived...
+    assert calls["n"] == 1             # ...on a single connection, no resumes
+    session.close()
+
+
+def test_dropped_connection_resumes_with_handle_not_error(monkeypatch):
+    """A mid-conversation socket drop resumes seamlessly with the checkpoint
+    handle instead of ending the whole conversation as a failure."""
+    resumption = NS(session_resumption_update=NS(resumable=True,
+                                                 new_handle="H1"),
+                    go_away=None, tool_call=None, server_content=None)
+
+    class DroppingSession(FakeSession):
+        async def receive(self):
+            if self.turns:
+                for msg in self.turns.pop(0):
+                    yield msg
+                return
+            raise ConnectionError("socket dropped mid-conversation")
+
+    errors = []
+    session, fakes, calls = make_session(
+        monkeypatch, sessions=[DroppingSession(turns=[[resumption]]),
+                               FakeSession()],
+        on_error=errors.append)
+    session.start()
+    deadline = time.time() + 3
+    while calls["n"] < 2 and time.time() < deadline:
+        time.sleep(0.02)
+    assert calls["n"] >= 2             # reconnected...
+    assert calls["handles"][1] == "H1"  # ...with the checkpoint handle
+    assert session.active
+    assert errors == []                # seamless — never surfaced as failure
     session.close()
 
 

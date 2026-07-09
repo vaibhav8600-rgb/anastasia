@@ -240,10 +240,12 @@ class GeminiLiveSession:
     async def _run(self) -> None:
         self._in_queue = asyncio.Queue()
         first = True
+        reconnect_failures = 0
         while not self._stop.is_set():
             try:
                 async with self._connect(self._build_config()) as session:
                     self.active = True
+                    reconnect_failures = 0
                     self._touch()
                     if first:
                         self._started_evt.set()
@@ -256,8 +258,17 @@ class GeminiLiveSession:
                     self._started_evt.set()   # unblock start() with active=False
                     self._report_error(f"connect: {e}")
                     return
-                self._report_error(f"session: {e}")
-                return
+                # One dropped socket shouldn't end the conversation: resume
+                # with the checkpoint handle unless it keeps failing.
+                reconnect_failures += 1
+                if self._stop.is_set() or not self.resumption_handle \
+                        or reconnect_failures >= 3:
+                    self.active = False
+                    self._report_error(f"session: {e}")
+                    return
+                devlog.warn(f"Gemini Live: connection dropped "
+                            f"({str(e)[:120]}) — resuming with handle...")
+                continue
             if self._stop.is_set():
                 self.active = False
                 return
@@ -331,10 +342,30 @@ class GeminiLiveSession:
                 return
 
     async def _recv_loop(self, session) -> None:
-        async for message in session.receive():
-            if self._stop.is_set():
-                return
-            self._handle_server_message(message)
+        """session.receive() is a PER-TURN generator in the SDK: it ends at
+        each turn_complete while the connection stays open. Treating that as
+        connection-end (the original bug) forced a reconnect after EVERY
+        turn — and the resumed checkpoint lags the just-delivered answer, so
+        the model would re-answer all the 'uncommitted' turns in one
+        composite reply. Keep calling receive() on the same connection.
+        A genuinely closed socket makes receive() end immediately with no
+        messages — a few empty rounds in a row means the connection is gone,
+        so unwind normally (the _run loop decides whether to resume)."""
+        empty_rounds = 0
+        while not self._stop.is_set():
+            got_message = False
+            async for message in session.receive():
+                got_message = True
+                if self._stop.is_set():
+                    return
+                self._handle_server_message(message)
+            if got_message:
+                empty_rounds = 0
+            else:
+                empty_rounds += 1
+                if empty_rounds >= 3:
+                    return
+                await asyncio.sleep(0.05)
 
     # Parsing is defensive getattr-walking so tests can drive it with plain
     # namespaces and SDK message-shape churn degrades gracefully.
