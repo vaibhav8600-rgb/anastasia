@@ -12,7 +12,7 @@ from pathlib import Path
 from app.tools import ToolContext, ToolResult, tool
 
 THUMB_MAX_WIDTH = 320
-THUMB_BUDGET_S = 0.5   # if generation is slower, show the card without preview
+THUMB_BUDGET_S = 1.0   # if generation is slower, show the card without preview
 
 
 def _make_thumbnail(image_path: Path) -> str | None:

@@ -1,13 +1,24 @@
 """Configuration loading/saving for Anastasia (Anna)."""
 
 import json
+import os
+import sys
 from pathlib import Path
 from typing import Dict, List
 
 from pydantic import BaseModel, Field
 
 APP_DIR = Path(__file__).resolve().parent
-DATA_DIR = APP_DIR / "data"
+
+
+def _data_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        base = os.environ.get("LOCALAPPDATA")
+        return (Path(base) if base else Path.home() / "AppData" / "Local") / "Anastasia"
+    return APP_DIR / "data"
+
+
+DATA_DIR = _data_dir()
 CONFIG_PATH = DATA_DIR / "config.json"
 MEMORY_PATH = DATA_DIR / "memory.json"
 HISTORY_DB_PATH = DATA_DIR / "history.sqlite"
@@ -63,7 +74,7 @@ class STTConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
-    """All user-tunable settings. Persisted to app/data/config.json."""
+    """All user-tunable settings. Persisted to DATA_DIR/config.json."""
 
     model_config = {"extra": "ignore"}
 

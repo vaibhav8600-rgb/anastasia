@@ -169,6 +169,21 @@ python app\main.py --doctor   # health check
 | Streaming stopped working | Deepgram failed 3× → the STT circuit routes to local Whisper for 120s, then auto-probes. Anna keeps working on local Whisper meanwhile |
 | Mic stays on between replies | Continuous Conversation mode is on. Say "stop listening", tap the mic, or toggle Conversation off |
 
+## Windows installer
+
+For a source install with `.venv`, a launcher and a desktop shortcut:
+
+```powershell
+.\installer\Install-Anastasia.ps1
+```
+
+For a packaged build plus an optional Inno Setup installer:
+
+```powershell
+.\installer\Build-Installer.ps1 -InstallBuildTools -Version 0.1.0
+```
+
+Details: [INSTALLER.md](INSTALLER.md).
 ## Development
 
 ```powershell

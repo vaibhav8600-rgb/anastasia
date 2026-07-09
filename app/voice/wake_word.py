@@ -101,7 +101,8 @@ class WhisperWakeWord(threading.Thread):
         from faster_whisper import WhisperModel
 
         from app.voice import audio_gate
-        from app.voice.recorder import resolve_microphone_device
+        from app.voice.recorder import (choose_capture_sample_rate,
+                                        resolve_microphone_device)
 
         model_size = getattr(self.config, "wake_word_model", "base")
         try:
@@ -111,16 +112,31 @@ class WhisperWakeWord(threading.Thread):
             devlog.warn(f"Wake word model load failed: {e}")
             return
 
-        rate, chunk = 16000, 1600           # 100ms frames
-        device_arg, _info, _warn = resolve_microphone_device(self.config)
+        device_arg, device_info, _warn = resolve_microphone_device(self.config)
+        rate = choose_capture_sample_rate(sd, self.config, device_arg, device_info)
+        chunk = max(400, int(rate * 0.1))   # 100ms frames
         buf, speech_seen, silence, last_fire = [], False, 0, 0.0
         try:
             stream = sd.InputStream(samplerate=rate, channels=1, dtype="int16",
                                     blocksize=chunk, device=device_arg)
-        except Exception as e:
-            from app.agent.devlog import devlog
-            devlog.warn(f"Wake word mic unavailable: {e}")
-            return
+        except Exception as first_error:
+            fallback = int(float((device_info or {}).get("default_samplerate", 0) or 0))
+            if fallback > 0 and fallback != rate:
+                try:
+                    rate = fallback
+                    chunk = max(400, int(rate * 0.1))
+                    stream = sd.InputStream(samplerate=rate, channels=1,
+                                            dtype="int16", blocksize=chunk,
+                                            device=device_arg)
+                except Exception as fallback_error:
+                    from app.agent.devlog import devlog
+                    devlog.warn("Wake word mic unavailable: "
+                                f"{fallback_error}")
+                    return
+            else:
+                from app.agent.devlog import devlog
+                devlog.warn(f"Wake word mic unavailable: {first_error}")
+                return
         with stream:
             while not self._stop_flag.is_set():
                 audio, _ = stream.read(chunk)
@@ -148,7 +164,9 @@ class WhisperWakeWord(threading.Thread):
         if time.time() - last_fire < self.COOLDOWN_SECONDS:
             return False
         import numpy as np
+        from app.voice.recorder import normalize_audio_for_stt
         try:
+            data = normalize_audio_for_stt(data, rate, 16000)
             segments, _info = model.transcribe(
                 data.astype(np.float32) / 32768.0, language="en", beam_size=1)
             text = " ".join(s.text for s in segments).strip()
@@ -199,16 +217,42 @@ class OpenWakeWordListener(threading.Thread):
             model = Model()
 
         from app.voice import audio_gate
+        from app.voice.recorder import (choose_capture_sample_rate,
+                                        normalize_audio_for_stt,
+                                        resolve_microphone_device)
 
-        chunk = 1280
+        device_arg, device_info, _warn = resolve_microphone_device(self.config)
+        rate = choose_capture_sample_rate(sd, self.config, device_arg, device_info)
+        chunk = max(320, int(rate * 0.08))
         last_fire = 0.0
-        with sd.InputStream(samplerate=16000, channels=1, dtype="int16",
-                            blocksize=chunk) as stream:
+        try:
+            stream = sd.InputStream(samplerate=rate, channels=1, dtype="int16",
+                                    blocksize=chunk, device=device_arg)
+        except Exception as first_error:
+            fallback = int(float((device_info or {}).get("default_samplerate", 0) or 0))
+            if fallback > 0 and fallback != rate:
+                try:
+                    rate = fallback
+                    chunk = max(320, int(rate * 0.08))
+                    stream = sd.InputStream(samplerate=rate, channels=1,
+                                            dtype="int16", blocksize=chunk,
+                                            device=device_arg)
+                except Exception as fallback_error:
+                    from app.agent.devlog import devlog
+                    devlog.warn("OpenWakeWord mic unavailable: "
+                                f"{fallback_error}")
+                    return
+            else:
+                from app.agent.devlog import devlog
+                devlog.warn(f"OpenWakeWord mic unavailable: {first_error}")
+                return
+        with stream:
             while not self._stop_flag.is_set():
                 audio, _ = stream.read(chunk)
                 if audio_gate.speaking.is_set():
                     continue
-                scores = model.predict(np.squeeze(audio))
+                audio_16k = normalize_audio_for_stt(audio, rate, 16000)
+                scores = model.predict(np.squeeze(audio_16k))
                 if any(s >= self.SCORE_THRESHOLD for s in scores.values()):
                     now = time.time()
                     if now - last_fire >= self.COOLDOWN_SECONDS:

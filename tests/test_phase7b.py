@@ -89,6 +89,65 @@ def test_audio_normalized_to_16khz_mono():
     assert 490 <= int(normalized.max()) <= 510
 
 
+def test_capture_rate_falls_back_to_device_default(monkeypatch):
+    calls = []
+
+    class FakeStream:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+        def close(self):
+            pass
+
+    devices = [{
+        "name": "Analogue 1 + 2",
+        "hostapi": 0,
+        "max_input_channels": 1,
+        "default_samplerate": 44100,
+    }]
+
+    def query_devices(kind=None, **_kwargs):
+        return devices[0] if kind == "input" else devices
+
+    def check_input_settings(**kwargs):
+        if kwargs["samplerate"] == 16000:
+            raise RuntimeError("Invalid sample rate")
+
+    fake_sd = types.SimpleNamespace(
+        InputStream=FakeStream,
+        query_devices=query_devices,
+        query_hostapis=lambda: [{"name": "WASAPI"}],
+        check_input_settings=check_input_settings,
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    recorder = Recorder(make_config())
+    recorder.start()
+    recorder.stop()
+
+    assert calls and calls[0]["samplerate"] == 44100
+    assert recorder.capture_sample_rate == 44100
+
+
+def test_streaming_frames_are_resampled_to_16khz():
+    recorder = Recorder(make_config())
+    recorder._recording = True
+    recorder._capture_sample_rate = 44100
+    sent = []
+    recorder.set_frame_observer(sent.append)
+    frame = np.zeros((4410, 1), dtype=np.int16)  # 100ms at 44.1kHz
+
+    recorder._callback(frame, len(frame), None, None)
+
+    assert sent and len(sent[0]) == 1600 * 2  # 100ms at 16kHz, int16 bytes
+
+
 def test_microphone_device_logged_once_per_session(monkeypatch):
     from app.agent.devlog import devlog
 

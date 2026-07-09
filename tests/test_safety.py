@@ -126,10 +126,16 @@ def test_llm_confirmation_flag_never_downgraded():
 def test_window_control_target_must_be_approved_alias():
     allowed = validate_action(
         plan("window_control", {"action": "close", "app": "chrome"}), cfg())
-    blocked = validate_action(
+    blocked_app = validate_action(
         plan("window_control", {"action": "close", "app": "unknown"}), cfg())
+    blocked_app_name = validate_action(
+        plan("window_control", {"action": "close", "app_name": "unknown"}), cfg())
+    blocked_target = validate_action(
+        plan("window_control", {"action": "close", "target": "unknown"}), cfg())
     assert allowed.allowed and allowed.requires_confirmation
-    assert not blocked.allowed
+    assert not blocked_app.allowed
+    assert not blocked_app_name.allowed
+    assert not blocked_target.allowed
 
 
 def test_strict_mode_escalates_medium_risk():

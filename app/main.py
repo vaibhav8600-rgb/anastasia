@@ -584,22 +584,21 @@ class Controller:
                     self.show_info("One moment — I'm finishing the last command.")
                     return
                 streaming = self.stt_router.use_streaming()
+                # Start recording IMMEDIATELY — the local buffer is the safety
+                # net and captures audio with no delay. Deepgram (if on) then
+                # connects in the background and replays the buffered frames, so
+                # a slow/failed cloud connection never delays the mic or loses
+                # your first words.
                 try:
-                    if streaming:
-                        self._begin_streaming_stt()
                     self.recorder.start(on_auto_stop=lambda: self._ui(self.toggle_mic))
                 except MicrophoneError as e:
-                    self._end_streaming_stt()
                     self.show_error(str(e))
                     return
-                except Exception as e:
-                    devlog.warn(f"Streaming STT failed to start ({e}); using local Whisper.")
-                    self._end_streaming_stt()
-                    self.recorder.start(on_auto_stop=lambda: self._ui(self.toggle_mic))
                 self._record_source = source
                 self.set_state("listening")
                 self._ui(self.ui.set_mic_active, True)
-                self._emit_streaming_indicator(streaming and self._active_stream is not None)
+                if streaming:
+                    self._begin_streaming_stt_async()
             else:
                 self._ui(self.ui.set_mic_active, False)
                 self._emit_streaming_indicator(False)
@@ -615,17 +614,36 @@ class Controller:
                                      args=(generation,), daemon=True).start()
 
     # ------------------------------------------------ streaming STT (9A)
-    def _begin_streaming_stt(self) -> None:
-        """Open a Deepgram session and feed it the recorder's live frames.
-        Raises on failure so the caller falls back to local Whisper."""
-        stream = self.stt_router.deepgram.start_stream(
-            on_partial=self._on_stt_partial,
-            on_final=self._on_stt_final,
-            on_error=self._on_stt_error)
-        self._active_stream = stream
-        self._stream_generation = self._stt_generation
-        self.recorder.set_frame_observer(stream.send_audio)
-        devlog.log("Streaming STT: Deepgram socket open (live audio).")
+    def _begin_streaming_stt_async(self) -> None:
+        """Connect Deepgram off the mic path. On success, replay the frames
+        captured so far and attach the live observer; on failure, count it for
+        the circuit breaker and let local Whisper handle the turn (the buffer
+        is already recording). Never blocks the mic."""
+        generation = self._stt_generation
+
+        def worker():
+            try:
+                stream = self.stt_router.deepgram.start_stream(
+                    on_partial=self._on_stt_partial,
+                    on_final=self._on_stt_final,
+                    on_error=self._on_stt_error)
+            except Exception as e:
+                # connection/gate failure -> circuit + clean local fallback
+                self.stt_router.record_failure(" ".join(str(e).split())[:120])
+                return
+            # user may have stopped (or a newer turn started) while connecting
+            if generation != self._stt_generation or not self.recorder.recording:
+                stream.close()
+                return
+            self._active_stream = stream
+            self._stream_generation = generation
+            buffered = self.recorder.buffered_pcm()
+            if buffered:
+                stream.send_audio(buffered)   # replay early frames
+            self.recorder.set_frame_observer(stream.send_audio)
+            devlog.log("Streaming STT: Deepgram connected (live audio).")
+            self._emit_streaming_indicator(True)
+        threading.Thread(target=worker, daemon=True, name="anna-dg-connect").start()
 
     def _finish_streaming_stt(self) -> None:
         stream = self._active_stream
@@ -737,8 +755,10 @@ class Controller:
     def _transcribe_recording(self):
         """Stop recording and return text plus STT confidence metadata."""
         from app.voice.stt_whisper import TranscriptionResult
+        source_rate = getattr(self.recorder, "capture_sample_rate",
+                              self.config.sample_rate)
         data = self.recorder.stop()
-        if data is None or len(data) < self.config.sample_rate // 4:
+        if data is None or len(data) < source_rate // 4:
             return TranscriptionResult(text="")
         import numpy as np
         peak = float(np.max(np.abs(data.astype(np.float32)))) / 32768.0
@@ -747,7 +767,7 @@ class Controller:
             devlog.warn(f"Low microphone level detected (peak: {peak * 100:.1f}%).")
             self.show_info("Your mic level seems very low — check Windows input volume.")
         from app.voice.recorder import normalize_audio_for_stt
-        data = normalize_audio_for_stt(data, self.config.sample_rate, 16000)
+        data = normalize_audio_for_stt(data, source_rate, 16000)
         wav_path = Path(tempfile.gettempdir()) / "anna_input.wav"
         try:
             self.recorder.save_wav(data, wav_path, sample_rate=16000)

@@ -158,14 +158,26 @@ def test_streaming_indicator_state_emitted_when_socket_open(monkeypatch):
     bridge.controller = controller
     JsApi(bridge).ready()
 
-    # stub the socket + recorder so no hardware/network is touched
+    # stub the socket + recorder so no hardware/network is touched. The mic
+    # starts immediately; Deepgram connects in a background thread and emits
+    # the indicator once the socket is up (9.1: non-blocking connect).
     controller.stt_router.deepgram._connect = lambda s: setattr(s, "ws", FakeWS()) or s.ws
-    monkeypatch.setattr(controller.recorder, "start", lambda on_auto_stop=None: None)
+    rec = {"on": False}   # off before start, on after -> mirrors real recorder
+    monkeypatch.setattr(controller.recorder, "start",
+                        lambda on_auto_stop=None: rec.__setitem__("on", True))
+    monkeypatch.setattr(controller.recorder, "buffered_pcm", lambda: b"")
+    monkeypatch.setattr(controller.recorder, "set_frame_observer", lambda cb: None)
     monkeypatch.setattr(type(controller.recorder), "recording",
-                        property(lambda self: controller._active_stream is not None))
+                        property(lambda self: rec["on"]))
 
     controller.toggle_mic()
-    events = [e for e in window.of_type("stt_streaming")]
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        events = window.of_type("stt_streaming")
+        if events and events[-1]["payload"]["active"] is True:
+            break
+        time.sleep(0.01)
+    events = window.of_type("stt_streaming")
     assert events and events[-1]["payload"]["active"] is True
     assert controller._active_stream is not None
 

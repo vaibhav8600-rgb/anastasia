@@ -77,13 +77,103 @@ def _input_device_entries(sd=None) -> list[dict]:
     return entries
 
 
+# Windows lists the same physical mic once per host API. MME + WASAPI cover
+# every real device cleanly; DirectSound/WDM-KS just duplicate them (with
+# uglier names), so we hide those from the picker.
+_DISPLAY_HOSTAPIS = {"windows wasapi": 0, "mme": 1}
+
+# Virtual / loopback / placeholder "devices" that aren't a usable microphone.
+_VIRTUAL_MARKERS = ("sound mapper", "primary sound capture", "stereo mix",
+                    "wave out mix", "what u hear", "loopback", "sum",
+                    "output ()", "input ()")
+
+
+def _dedupe_key(name: str) -> str:
+    import re
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower())[:18]
+
+
+def _is_real_mic(entry: dict) -> bool:
+    name = str(entry.get("name", "")).strip()
+    low = name.lower()
+    if not name or low.startswith("input (@") or low in ("input ()", "input"):
+        return False
+    return not any(marker in low for marker in _VIRTUAL_MARKERS)
+
+
+def _dedupe_for_display(entries: list[dict]) -> list[dict]:
+    """Real microphones only, one entry per physical device. Hides duplicate
+    host APIs and virtual/loopback devices so the picker isn't cluttered."""
+    candidates = [e for e in entries
+                  if str(e.get("hostapi", "")).lower() in _DISPLAY_HOSTAPIS
+                  and _is_real_mic(e)]
+    best: dict[str, dict] = {}
+    for entry in candidates:
+        key = _dedupe_key(entry.get("name", ""))
+        prio = _DISPLAY_HOSTAPIS.get(str(entry.get("hostapi", "")).lower(), 9)
+        current = best.get(key)
+        if (current is None or entry.get("is_default")
+                or (not current.get("is_default")
+                    and prio < _DISPLAY_HOSTAPIS.get(
+                        str(current.get("hostapi", "")).lower(), 9))):
+            best[key] = entry
+    seen, out = set(), []
+    for entry in candidates:                 # keep discovery order
+        key = _dedupe_key(entry.get("name", ""))
+        if key not in seen:
+            seen.add(key)
+            out.append(best[key])
+    return out
+
+
+def _display_label(entry: dict) -> str:
+    """Clean label without the noisy host-API suffix; keep the default tag."""
+    label = str(entry.get("name", "Microphone")).strip()
+    if entry.get("is_default"):
+        label += " — default"
+    return label
+
+def _device_default_sample_rate(device_info: dict | None, fallback: int) -> int:
+    try:
+        rate = int(float((device_info or {}).get("default_samplerate", 0) or 0))
+    except (TypeError, ValueError):
+        rate = 0
+    return rate if rate > 0 else fallback
+
+
+def _rate_supported(sd, device_arg, sample_rate: int) -> bool:
+    check = getattr(sd, "check_input_settings", None)
+    if check is None:
+        return True
+    try:
+        check(device=device_arg, samplerate=sample_rate, channels=1, dtype="int16")
+        return True
+    except Exception:
+        return False
+
+
+def choose_capture_sample_rate(sd, config, device_arg, device_info: dict | None):
+    """Pick a hardware capture rate. Prefer Anna's 16k path, but gracefully
+    fall back to the device's native/default rate for USB/analog interfaces."""
+    preferred = int(getattr(config, "sample_rate", 16000) or 16000)
+    device_default = _device_default_sample_rate(device_info, preferred)
+    candidates = [preferred, device_default, 48000, 44100, 32000, 22050, 16000]
+    seen = set()
+    for rate in candidates:
+        if rate <= 0 or rate in seen:
+            continue
+        seen.add(rate)
+        if _rate_supported(sd, device_arg, rate):
+            return rate
+    return preferred
+
 def list_microphones() -> list[dict]:
     try:
-        entries = _input_device_entries()
+        entries = _dedupe_for_display(_input_device_entries())
     except Exception:
         entries = []
     options = [{"id": "", "label": "System default microphone"}]
-    options.extend({"id": entry["id"], "label": entry["label"]}
+    options.extend({"id": entry["id"], "label": _display_label(entry)}
                    for entry in entries)
     return options
 
@@ -127,16 +217,23 @@ def resolve_microphone_device(config, entries: list[dict] | None = None):
 
 def microphone_dropdown_state(config):
     try:
-        entries = _input_device_entries()
+        all_entries = _input_device_entries()
     except Exception:
-        entries = []
+        all_entries = []
+    entries = _dedupe_for_display(all_entries)
     options = [{"id": "", "label": "System default microphone"}]
-    options.extend({"id": entry["id"], "label": entry["label"]}
+    options.extend({"id": entry["id"], "label": _display_label(entry)}
                    for entry in entries)
     preferred = str(getattr(config, "microphone_device", "") or "").strip()
-    _device_arg, selected_entry, warning = resolve_microphone_device(config, entries=entries)
+    # resolve against the FULL list so a previously-saved (now-deduped) id
+    # still matches by signature
+    _device_arg, selected_entry, warning = resolve_microphone_device(config, entries=all_entries)
     if preferred and selected_entry is not None and not warning:
-        selected_id = selected_entry["id"]
+        # map the resolved device to its deduped display entry (same mic)
+        key = _dedupe_key(selected_entry.get("name", ""))
+        shown = next((e for e in entries
+                      if _dedupe_key(e.get("name", "")) == key), None)
+        selected_id = (shown or selected_entry)["id"]
     else:
         selected_id = ""
     note = warning if warning else ("No microphones detected right now."
@@ -156,16 +253,33 @@ class Recorder:
         self._on_auto_stop = None
         self._last_logged_device = None
         self._last_device_warning = None
+        self._capture_sample_rate = int(getattr(config, "sample_rate", 16000) or 16000)
         self._frame_observer = None   # streaming STT: called per captured frame
 
     @property
     def recording(self) -> bool:
         return self._recording
 
+    @property
+    def capture_sample_rate(self) -> int:
+        return self._capture_sample_rate
+
     def set_frame_observer(self, cb) -> None:
         """cb(pcm_int16_bytes) receives each captured frame live (streaming
         STT). The frames are STILL buffered locally as the Whisper safety net."""
         self._frame_observer = cb
+
+    def buffered_pcm(self) -> bytes:
+        """Audio captured so far as 16k int16 PCM for streaming STT replay."""
+        if not self._frames:
+            return b""
+        try:
+            import numpy as np
+            data = np.concatenate(self._frames, axis=0)
+            return normalize_audio_for_stt(
+                data, self._capture_sample_rate, 16000).tobytes()
+        except Exception:
+            return b""
 
     def start(self, on_auto_stop=None) -> None:
         """Begin recording. on_auto_stop fires (once, from a worker thread)
@@ -178,6 +292,10 @@ class Recorder:
             raise MicrophoneError(f"Audio library unavailable: {e}") from e
 
         device_arg, device_info, warning = resolve_microphone_device(self.config)
+        capture_rate = choose_capture_sample_rate(
+            sd, self.config, device_arg, device_info)
+        fallback_rate = _device_default_sample_rate(
+            device_info, int(getattr(self.config, "sample_rate", 16000) or 16000))
         self._frames = []
         self._speech_seen = False
         self._silence_start = None
@@ -185,12 +303,28 @@ class Recorder:
         self._start_time = time.time()
         try:
             self._stream = sd.InputStream(
-                samplerate=self.config.sample_rate, channels=1, device=device_arg,
+                samplerate=capture_rate, channels=1, device=device_arg,
                 dtype="int16", callback=self._callback)
             self._stream.start()
-        except Exception as e:
+        except Exception as first_error:
             self._stream = None
-            raise MicrophoneError(f"Could not open the microphone: {e}") from e
+            if fallback_rate > 0 and fallback_rate != capture_rate:
+                try:
+                    self._stream = sd.InputStream(
+                        samplerate=fallback_rate, channels=1, device=device_arg,
+                        dtype="int16", callback=self._callback)
+                    self._stream.start()
+                    capture_rate = fallback_rate
+                except Exception as fallback_error:
+                    self._stream = None
+                    raise MicrophoneError(
+                        "Could not open the microphone at "
+                        f"{capture_rate}Hz or {fallback_rate}Hz: "
+                        f"{fallback_error}") from fallback_error
+            else:
+                raise MicrophoneError(
+                    f"Could not open the microphone: {first_error}") from first_error
+        self._capture_sample_rate = capture_rate
         self._recording = True
         try:
             from app.agent.devlog import devlog
@@ -203,7 +337,8 @@ class Recorder:
             if label != self._last_logged_device:
                 default_rate = int((device_info or {}).get("default_samplerate", 0) or 0)
                 devlog.log(f"Microphone input: {label} | capture: "
-                           f"{self.config.sample_rate}Hz mono | device: {default_rate}Hz")
+                           f"{self._capture_sample_rate}Hz mono | "
+                           f"device: {default_rate}Hz")
                 self._last_logged_device = label
         except Exception:
             pass
@@ -218,7 +353,9 @@ class Recorder:
         self._frames.append(indata.copy())
         if self._frame_observer is not None:   # feed streaming STT live
             try:
-                self._frame_observer(bytes(indata))
+                frame = normalize_audio_for_stt(
+                    indata, self._capture_sample_rate, 16000)
+                self._frame_observer(frame.tobytes())
             except Exception:
                 pass
         now = time.time()

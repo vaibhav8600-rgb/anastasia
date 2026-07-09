@@ -10,3 +10,8 @@ app/data/memory.json
 app/data/voices/
 .claude/settings.local.json*
 app/data/piper/
+# Installer/build outputs
+build/
+dist/
+Run-Anna.ps1
+.phase_installer_tmp/

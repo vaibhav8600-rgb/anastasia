@@ -23,6 +23,7 @@ from app.llm.providers import DataClass, PrivacyViolation, mask_key
 
 CIRCUIT_FAILURES = 3
 CIRCUIT_COOLDOWN_S = 120.0
+CONNECT_WAIT_S = 3.0   # how long to wait for the WS to actually connect
 DEEPGRAM_URL = (
     "wss://api.deepgram.com/v1/listen"
     "?model={model}&language=en&smart_format=true&interim_results=true"
@@ -70,6 +71,7 @@ class DeepgramStream:
         self.on_error = on_error
         self.ws = None
         self.closed = False
+        self.connected = False
         self._started = time.perf_counter()
         self._final_sent = False
         self._errored = False   # report at most one error per stream
@@ -161,28 +163,44 @@ class DeepgramSTT:
         if not allowed:
             raise PrivacyViolation(f"live audio not permitted: {reason}")
         stream = DeepgramStream(self, on_partial, on_final, on_error)
+        # Raises ConnectionError if the socket doesn't actually come up in time,
+        # so the caller falls back to local Whisper cleanly (no misleading
+        # "socket open" log followed by an instant "already closed" failure).
         stream.ws = self._connect(stream)
         return stream
 
     def _connect(self, stream: DeepgramStream):
-        """Open the WebSocket. Isolated so tests can monkeypatch it."""
+        """Open the WebSocket and WAIT for it to actually connect. Isolated so
+        tests can monkeypatch it."""
         import websocket  # websocket-client
         url = DEEPGRAM_URL.format(model=self.config.deepgram_model)
         ws = websocket.WebSocketApp(
             url,
             header={"Authorization": f"Token {deepgram_key(self.config)}"},
+            on_open=lambda _ws: setattr(stream, "connected", True),
             on_message=lambda _ws, m: stream._handle_message(m),
             on_error=lambda _ws, e: stream._handle_error(e),
+            on_close=lambda _ws, *a: setattr(stream, "closed", True),
         )
         thread = threading.Thread(target=ws.run_forever, daemon=True,
                                   name="anna-deepgram")
         thread.start()
-        # give the socket a moment to connect
-        for _ in range(50):
-            if getattr(ws, "sock", None) and ws.sock and ws.sock.connected:
+        # Wait for a real connection — TLS + WS upgrade to Deepgram can take
+        # ~1s on a distant/slow link. Give it a proper budget before giving up.
+        deadline = time.monotonic() + CONNECT_WAIT_S
+        while time.monotonic() < deadline:
+            connected = getattr(stream, "connected", False) or (
+                getattr(ws, "sock", None) and ws.sock and ws.sock.connected)
+            if connected:
+                return ws
+            if stream.closed:
                 break
-            time.sleep(0.01)
-        return ws
+            time.sleep(0.02)
+        try:
+            ws.close()
+        except Exception:
+            pass
+        raise ConnectionError("Deepgram socket did not connect in time")
 
 
 class WhisperSTT:
