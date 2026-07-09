@@ -125,6 +125,8 @@ class GeminiLiveSession:
     def send_tool_response(self, call_id: str, name: str, result: dict) -> None:
         """10B: answer a tool call after LOCAL validation/execution."""
         if self.active and self._loop is not None:
+            self._awaiting_reply = True   # now awaiting the spoken follow-up
+            self._touch()
             try:
                 self._loop.call_soon_threadsafe(
                     self._in_queue.put_nowait,
@@ -328,6 +330,10 @@ class GeminiLiveSession:
 
         tool_call = getattr(message, "tool_call", None)
         if tool_call is not None and self.on_tool_call:
+            # The ball is in OUR court now (local validation/confirmation can
+            # take 30s+) — the server's silence while it waits for the tool
+            # response must not read as a stall.
+            self._awaiting_reply = False
             for fc in getattr(tool_call, "function_calls", None) or []:
                 try:
                     self.on_tool_call(getattr(fc, "name", ""),
