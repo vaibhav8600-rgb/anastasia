@@ -64,6 +64,48 @@ def test_confirmed_live_tool_call_executes_after_local_approval():
     assert responses[0][2] == {"success": True, "message": "Done — ran it."}
 
 
+def test_duplicate_inflight_tool_call_deduped_not_second_card():
+    """User-reported: a slow confirmation makes the model retry the SAME
+    call; that retry must NOT become a second confirmation card (which then
+    strands the UI). The retry gets a 'hold on' response and asks for the
+    card only once."""
+    import threading
+    config = make_config()
+    agent = FakeAgent(config, execute_result=ToolResult(True, "Closed it."))
+    responses = []
+    entered = threading.Event()
+    release = threading.Event()
+    asked = {"n": 0}
+
+    def confirm(plan, safety):
+        asked["n"] += 1
+        entered.set()            # first call is now mid-confirmation
+        release.wait(3.0)        # ...held here while the retry arrives
+        return True
+
+    bridge = LiveToolBridge(
+        config, agent, FakeHistory(), run_async=True,
+        respond=lambda cid, n, r: responses.append((cid, r)),
+        ask_confirmation=confirm)
+    args = {"action": "close", "app": "mspaint"}
+    bridge.handle_tool_call("window_control", dict(args), "A")
+    assert entered.wait(2.0)
+    # The retry lands while the first is still awaiting approval.
+    bridge.handle_tool_call("window_control", dict(args), "B")
+    deadline = time.time() + 2
+    while not any(cid == "B" for cid, _ in responses) and time.time() < deadline:
+        time.sleep(0.02)
+    dup = next(r for cid, r in responses if cid == "B")
+    assert dup["success"] is True and "already handling" in dup["message"].lower()
+    assert asked["n"] == 1                       # only ONE card was raised
+    release.set()
+    deadline = time.time() + 2
+    while not any(cid == "A" for cid, _ in responses) and time.time() < deadline:
+        time.sleep(0.02)
+    assert len(agent.executed) == 1              # executed exactly once
+    assert next(r for cid, r in responses if cid == "A")["message"] == "Closed it."
+
+
 def test_dangerous_terminal_from_live_blocked_before_confirmation():
     asked = []
     bridge, agent, history, responses = make_bridge(

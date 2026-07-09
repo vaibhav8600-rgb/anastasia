@@ -523,7 +523,11 @@ class CommandPipeline:
 
         if pending.kind == "live_tool":
             # The Live tool bridge executes (and answers the model) itself.
+            # Reset the UI state here too, or it strands in the yellow
+            # "waiting_confirmation" state after the tool runs (the controller
+            # translates "ready" -> "listening (Live)" while a session is up).
             self._fire_callback(pending, True)
+            self.ui.set_state("ready")
             return
 
         if pending.kind == "fuzzy" and safety.requires_confirmation:

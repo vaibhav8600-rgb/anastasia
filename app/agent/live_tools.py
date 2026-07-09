@@ -18,6 +18,7 @@ a tool the local policy would block can never be declared, and an undeclared
 tool the model hallucinates anyway still hits the same validator.
 """
 
+import json
 import threading
 
 from app.agent.devlog import devlog
@@ -152,7 +153,12 @@ class LiveToolBridge:
         # model without executing again.
         self.skip_check = skip_check
         self.run_async = run_async
-        self._lock = threading.Lock()  # one live tool call at a time
+        # Signatures of tool calls currently being processed. A slow
+        # confirmation makes the model retry the SAME call (it hasn't had a
+        # tool_response yet); without dedup that retry becomes a second
+        # confirmation card that strands after the first is approved.
+        self._inflight = set()
+        self._inflight_lock = threading.Lock()
 
     def attach_session(self, session) -> None:
         self.respond = session.send_tool_response
@@ -166,14 +172,37 @@ class LiveToolBridge:
         else:
             self._process(name, args, call_id)
 
+    @staticmethod
+    def _signature(name, args) -> tuple:
+        try:
+            return (name, json.dumps(args or {}, sort_keys=True, default=str))
+        except Exception:
+            return (name, str(args))
+
     def _process(self, name, args, call_id) -> None:
-        with self._lock:
-            try:
-                self._validate_and_run(name, args, call_id)
-            except Exception as e:
-                devlog.exception(e, context="live_tool")
-                self._send(call_id, name, False,
-                           "The tool failed locally. Nothing was executed.")
+        sig = self._signature(name, args)
+        with self._inflight_lock:
+            duplicate = sig in self._inflight
+            if not duplicate:
+                self._inflight.add(sig)
+        if duplicate:
+            # Same call already mid-flight (awaiting confirmation or running).
+            # Tell the model to wait instead of spawning a second card.
+            devlog.log(f"[gemini_live] tool_call {name} deduped "
+                       "(identical call already in flight)")
+            self._send(call_id, name, True,
+                       "I'm already handling that exact request — hold on, "
+                       "I haven't finished it yet. Don't repeat it.")
+            return
+        try:
+            self._validate_and_run(name, args, call_id)
+        except Exception as e:
+            devlog.exception(e, context="live_tool")
+            self._send(call_id, name, False,
+                       "The tool failed locally. Nothing was executed.")
+        finally:
+            with self._inflight_lock:
+                self._inflight.discard(sig)
 
     def _validate_and_run(self, name, args, call_id) -> None:
         plan = ActionPlan(intent=name, tool_name=name,

@@ -288,17 +288,43 @@ def test_live_tool_confirmation_flows_through_pipeline_card():
     pipeline.approve_pending()
     assert outcomes == [True]
     assert pipeline.pending is None
+    # Approve must reset the UI, or it strands in the yellow waiting state
+    # after the tool runs (user-reported: "close paint" left it stuck).
+    assert ui.states[-1] == "ready"
     # Deny path fires exactly once with False; no local TTS double-voice.
     assert pipeline.request_external_confirmation(plan, safety, "x",
                                                   outcomes.append)
     pipeline.cancel_pending()
     assert outcomes == [True, False]
+    assert ui.states[-1] == "ready"
     # Busy path: a second request while one is pending is refused (deny).
     assert pipeline.request_external_confirmation(plan, safety, "a",
                                                   outcomes.append)
     assert not pipeline.request_external_confirmation(plan, safety, "b",
                                                       outcomes.append)
     pipeline.cancel_pending()
+
+
+def test_live_confirmation_leaves_ui_in_listening_not_waiting():
+    """End-to-end at the controller: approving a Live tool confirmation must
+    return the UI to the Live listening state, never leave it yellow."""
+    controller = make_controller(engine_mode="gemini_live",
+                                 live_audio_consent=True,
+                                 gemini_api_key=LIVE_KEY)
+    controller._live = object()                  # a session is up
+    plan = ActionPlan(intent="window_control", tool_name="window_control",
+                      arguments={"action": "close", "app": "mspaint"})
+    safety = validate_action(plan, controller.config)
+    outcomes = []
+    assert controller.pipeline.request_external_confirmation(
+        plan, safety, "Gemini Live: window_control", outcomes.append)
+    assert "waiting_confirmation" in controller.ui.states
+    controller.pipeline.approve_pending()
+    assert outcomes == [True]
+    # "ready" is translated to the Live listening state while a session runs.
+    assert controller.ui.states[-1] == "listening"
+    assert controller.last_state == "listening"
+    assert "waiting_confirmation" not in controller.ui.states[-1:]
 
 
 # ---- 10C.4: the chip is honest ------------------------------------------------------

@@ -159,6 +159,13 @@ class Controller:
         self._ui(self.ui.transcript.add_info, text)
 
     def set_state(self, state: str, detail: str = "") -> None:
+        # While a Gemini Live conversation is up the mic is always open, so
+        # the resting state is "listening (Live)", never "ready" — translate
+        # here so every path (incl. confirmation resolution) lands correctly
+        # instead of stranding the UI. _end_live_conversation clears _live
+        # first, so the final "ready" after a session ends passes through.
+        if state == "ready" and self._live is not None:
+            state, detail = "listening", "Live — just talk"
         self.last_state = state
         self._ui(self.ui.set_state, state, detail)
 
