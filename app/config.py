@@ -96,6 +96,18 @@ class AppConfig(BaseModel):
     # Privacy (8C): clipboard text may only reach the cloud with this opt-in.
     # Files, screenshots and raw audio NEVER leave the machine regardless.
     allow_clipboard_to_cloud: bool = False
+
+    # Gemini Live (Phase 10, premium engine). Key also via env GEMINI_API_KEY
+    # or GOOGLE_API_KEY (env wins); never logged, masked in Settings.
+    # Model ID verified 2026-07 against ai.google.dev/gemini-api/docs/live-api:
+    # the Gemini API native-audio Live model is gemini-3.1-flash-live-preview
+    # (gemini-live-2.5-flash-native-audio is the Vertex AI variant). Preview
+    # tier — expect churn; editable in Settings.
+    gemini_api_key: str = ""
+    gemini_live_model: str = "gemini-3.1-flash-live-preview"
+    gemini_live_voice: str = "Kore"      # prebuilt HD voice; 10D makes this a picker
+    live_stall_timeout_s: float = 20.0   # mid-turn silence -> teardown + fallback
+    live_half_duplex: bool = True        # drop mic frames while Anna's audio plays
     ollama_timeout: int = 20
     ollama_keep_alive: str = "30m"   # keeps the model loaded between requests
     ollama_num_predict: int = 220    # hard cap on generated tokens

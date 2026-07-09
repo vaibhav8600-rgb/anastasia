@@ -15,6 +15,7 @@ numpy>=1.26
 faster-whisper>=1.0        # downloads the Whisper model on first use (CPU, int8)
 piper-tts>=1.4.2           # official OHF Piper runtime
 websocket-client>=1.7      # optional: Deepgram streaming STT (stt_mode=streaming)
+google-genai>=2.10         # optional: Gemini Live premium engine (engine_mode=gemini_live)
 
 # Computer control
 pyautogui>=0.9.54
