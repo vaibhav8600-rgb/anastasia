@@ -152,7 +152,7 @@ function appendDevlog(entry) {
 
 /* ---------------------------------------------------------------- chips */
 function setChips(chips) {
-  for (const key of ["brain", "model", "mic", "voice"]) {
+  for (const key of ["engine", "brain", "model", "mic", "voice"]) {
     const chip = $("#chip-" + key);
     const data = chips && chips[key];
     if (!chip || !data) continue;
@@ -338,6 +338,48 @@ function settingsHtml(s) {
         ~6s so you can reply without pressing the hotkey.</label>
     </div>
 
+    <h4 class="settings-section">Conversation engine</h4>
+    <div class="form-row"><label>Engine for voice conversations</label>
+      ${selectHtml("engine_mode", s.engine_mode || "pipeline", [
+        { value: "pipeline", label: "Pipeline — reliable default (speech-to-text → brain → voice)" },
+        { value: "gemini_live", label: "Gemini Live — premium: native speech-to-speech (cloud, metered)" },
+        { value: "local", label: "Local — everything on this PC, works offline" }])}</div>
+    <ul class="settings-hint" style="margin:0 0 10px 18px">
+      <li><b>Pipeline</b>: ~1.5–2.5s per turn, layered cloud/local fallback,
+          audio leaves only if you chose streaming STT / Aura voice.</li>
+      <li><b>Gemini Live</b>: sub-second, emotion-aware voice with natural
+          interruptions — but streams your microphone to Google continuously
+          while the mic is open, and bills per audio minute. Falls back to
+          the pipeline automatically on any failure.</li>
+      <li><b>Local</b>: Whisper → Ollama → Piper. Slower, fully offline,
+          nothing ever leaves this PC.</li>
+    </ul>
+    ${s.engine_mode === "gemini_live" && s.live_state_reason ? `<p class="settings-hint" style="color:var(--warn)">
+      ⚠ Live not active: ${esc(s.live_state_reason)}</p>` : ""}
+    <div class="form-row"><label>Gemini API key
+      ${s.gemini_key_set ? `(saved: ${esc(s.gemini_key_masked)})` : ""}</label>
+      <input id="set-gemini_api_key" type="password" value=""
+             placeholder="${s.gemini_key_set ? "leave empty to keep the saved key"
+                          : "AIza... — key from aistudio.google.com"}"></div>
+    <div class="form-row"><label>Gemini Live model (preview tier — may change)</label>
+      <input id="set-gemini_live_model" value="${esc(s.gemini_live_model || "")}"></div>
+    <div class="form-row" style="flex-direction:row;align-items:center;gap:10px">
+      <input type="checkbox" id="set-live_audio_consent"
+             ${s.live_audio_consent ? "checked" : ""} style="width:auto">
+      <label for="set-live_audio_consent" style="margin:0">
+        I understand Gemini Live streams my microphone audio to Google
+        continuously while the mic is open, and is billed per audio minute.
+        Without this, Anna stays on the pipeline.</label>
+    </div>
+    <div class="form-row" style="flex-direction:row;align-items:center;gap:10px">
+      <input type="checkbox" id="set-engine_rules_first"
+             ${s.engine_rules_first !== false ? "checked" : ""} style="width:auto">
+      <label for="set-engine_rules_first" style="margin:0">
+        Instant commands stay local (recommended): "open paint", screenshots
+        etc. run through Anna's local rules in every engine — instant, offline,
+        no cloud round-trip.</label>
+    </div>
+
     <h4 class="settings-section">Cloud brain</h4>
     <div class="form-row"><label>Cloud brain (faster, needs internet)</label>
       ${selectHtml("brain_mode", s.brain_mode, ["hybrid", "local_only"])}</div>
@@ -512,6 +554,11 @@ function collectSettings() {
     hands_free_followup: !!$("#set-hands_free_followup")?.checked,
     // key only travels when the user actually typed one (never the mask)
     ...(val("groq_api_key") ? { groq_api_key: val("groq_api_key") } : {}),
+    engine_mode: val("engine_mode"),
+    gemini_live_model: val("gemini_live_model"),
+    live_audio_consent: !!$("#set-live_audio_consent")?.checked,
+    engine_rules_first: !!$("#set-engine_rules_first")?.checked,
+    ...(val("gemini_api_key") ? { gemini_api_key: val("gemini_api_key") } : {}),
     stt_mode: val("stt_mode"),
     ...(val("deepgram_api_key") ? { deepgram_api_key: val("deepgram_api_key") } : {}),
     faster_whisper_model: val("faster_whisper_model"),
@@ -569,6 +616,15 @@ const handlers = {
 
   // Streaming STT (9A): unmistakable indication that live mic audio is
   // leaving the machine, plus the live interim transcript.
+  // Gemini Live (10C): unmistakable indication that continuous mic audio
+  // is streaming to Google for the whole conversation.
+  live_streaming: (p) => {
+    const on = !!(p && p.active);
+    document.body.classList.toggle("live-streaming", on);
+    const badge = $("#live-badge");
+    if (badge) badge.classList.toggle("hidden", !on);
+  },
+
   stt_streaming: (p) => {
     const on = !!(p && p.active);
     document.body.classList.toggle("stt-streaming", on);

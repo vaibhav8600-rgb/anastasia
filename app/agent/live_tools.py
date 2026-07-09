@@ -139,7 +139,7 @@ class LiveToolBridge:
     session.send_tool_response — with the local validator in between."""
 
     def __init__(self, config, agent, history, *, respond=None,
-                 ask_confirmation=None, run_async: bool = True):
+                 ask_confirmation=None, skip_check=None, run_async: bool = True):
         self.config = config
         self.agent = agent            # router.Agent — execute() is the ONLY executor
         self.history = history
@@ -147,6 +147,10 @@ class LiveToolBridge:
         # callable(plan, safety) -> bool. None (nothing wired) = deny — a
         # missing confirmation UI must fail closed, never open.
         self.ask_confirmation = ask_confirmation
+        # callable(name, args) -> message|None. Non-None = the action was
+        # already performed locally (rule short-circuit, 10C) — answer the
+        # model without executing again.
+        self.skip_check = skip_check
         self.run_async = run_async
         self._lock = threading.Lock()  # one live tool call at a time
 
@@ -175,6 +179,19 @@ class LiveToolBridge:
         plan = ActionPlan(intent=name, tool_name=name,
                           arguments=args if isinstance(args, dict) else {})
         transcript = f"[gemini_live] {plan.tool_name}"
+
+        # Rule short-circuit dedup (10C): the local router already did this
+        # an instant ago — nothing executes, the model just gets told.
+        if self.skip_check is not None:
+            try:
+                skip_msg = self.skip_check(plan.tool_name, plan.arguments)
+            except Exception:
+                skip_msg = None
+            if skip_msg:
+                devlog.log(f"[gemini_live] tool_call {plan.tool_name} deduped "
+                           "(already handled by the local rule router)")
+                self._send(call_id, name, True, str(skip_msg))
+                return
 
         # LOCAL safety validation — every Live tool call, no exceptions.
         safety = validate_action(plan, self.config)

@@ -255,6 +255,7 @@ class Recorder:
         self._last_device_warning = None
         self._capture_sample_rate = int(getattr(config, "sample_rate", 16000) or 16000)
         self._frame_observer = None   # streaming STT: called per captured frame
+        self._rolling_seconds = 0.0   # >0 = bounded live-mode buffer (10C)
 
     @property
     def recording(self) -> bool:
@@ -281,9 +282,14 @@ class Recorder:
         except Exception:
             return b""
 
-    def start(self, on_auto_stop=None) -> None:
+    def start(self, on_auto_stop=None, rolling_seconds: float = 0.0) -> None:
         """Begin recording. on_auto_stop fires (once, from a worker thread)
-        when trailing silence or the max duration is reached."""
+        when trailing silence or the max duration is reached.
+
+        rolling_seconds > 0 (Gemini Live mode, 10C): keep only the most
+        recent N seconds in the local buffer — the conversation can run
+        indefinitely without growing memory, while the tail stays available
+        as the same-turn fallback for local Whisper if Live drops."""
         if self._recording:
             return
         try:
@@ -300,6 +306,7 @@ class Recorder:
         self._speech_seen = False
         self._silence_start = None
         self._on_auto_stop = on_auto_stop
+        self._rolling_seconds = float(rolling_seconds or 0.0)
         self._start_time = time.time()
         try:
             self._stream = sd.InputStream(
@@ -351,6 +358,12 @@ class Recorder:
             return  # half-duplex: never capture Anna's own voice (sec 13a)
         import numpy as np
         self._frames.append(indata.copy())
+        if self._rolling_seconds > 0:   # live mode: bounded local buffer
+            cap = int(self._rolling_seconds * self._capture_sample_rate)
+            total = sum(len(f) for f in self._frames)
+            while len(self._frames) > 1 and total - len(self._frames[0]) >= cap:
+                total -= len(self._frames[0])
+                del self._frames[0]
         if self._frame_observer is not None:   # feed streaming STT live
             try:
                 frame = normalize_audio_for_stt(

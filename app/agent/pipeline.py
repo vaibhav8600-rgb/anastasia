@@ -49,6 +49,10 @@ class PendingAction:
     transcript: str
     kind: str = "safety"
     message: str = ""
+    # kind="live_tool" (10C): approve/cancel/timeout fires callback(approved)
+    # exactly once instead of executing through the pipeline — the Gemini
+    # Live tool bridge owns execution and the tool_response.
+    callback: object = None
 
 
 class PipelineUI(Protocol):
@@ -439,13 +443,40 @@ class CommandPipeline:
                        error="" if result.success else result.message)
 
     # ----------------------------------------------------- confirmation
+    def request_external_confirmation(self, plan, safety, transcript: str,
+                                      callback) -> bool:
+        """A non-pipeline source (the Gemini Live tool bridge) asks the user
+        for approval through the SAME confirmation card. callback(approved)
+        fires exactly once — approve, cancel, or timeout (False). Returns
+        False if another confirmation is already pending (caller denies)."""
+        with self._pending_lock:
+            if self.pending is not None:
+                return False
+        action_id = self._set_pending(plan, safety, transcript,
+                                      kind="live_tool", callback=callback)
+        self.ui.set_state("waiting_confirmation")
+        self.ui.ask_confirmation(action_id, transcript, plan, safety,
+                                 kind="safety",
+                                 message=plan.confirmation_message
+                                         or safety.reason)
+        return True
+
+    @staticmethod
+    def _fire_callback(pending, approved: bool) -> None:
+        try:
+            pending.callback(bool(approved))
+        except Exception as e:
+            devlog.exception(e, context="live confirm callback")
+
     def _set_pending(self, plan, safety, transcript: str,
-                     kind: str = "safety", message: str = "") -> int:
+                     kind: str = "safety", message: str = "",
+                     callback=None) -> int:
         with self._pending_lock:
             self._action_counter += 1
             action_id = self._action_counter
             self.pending = PendingAction(action_id, plan, safety, transcript,
-                                         kind=kind, message=message)
+                                         kind=kind, message=message,
+                                         callback=callback)
             timeout = (self.fuzzy_timeout_seconds if kind == "fuzzy"
                        else self.confirm_timeout_seconds)
             self._confirm_timer = threading.Timer(
@@ -489,6 +520,11 @@ class CommandPipeline:
             return
         plan, safety, transcript = pending.plan, pending.safety, pending.transcript
         self.ui.hide_confirmation()
+
+        if pending.kind == "live_tool":
+            # The Live tool bridge executes (and answers the model) itself.
+            self._fire_callback(pending, True)
+            return
 
         if pending.kind == "fuzzy" and safety.requires_confirmation:
             next_id = self._set_pending(plan, safety, transcript)
@@ -538,6 +574,14 @@ class CommandPipeline:
         self.ui.hide_confirmation()
         self._safe_log(transcript, plan, safety, executed=False,
                        result=f"cancelled ({reason})")
+        if pending.kind == "live_tool":
+            # No local TTS here — the Live model narrates the declined
+            # tool_response in its own voice.
+            self._fire_callback(pending, False)
+            self.ui.show_info(CONFIRM_TIMEOUT_MESSAGE if reason == "timeout"
+                              else "Cancelled — nothing was executed.")
+            self.ui.set_state("ready")
+            return
         if reason == "timeout":
             timeout = (self.fuzzy_timeout_seconds if pending.kind == "fuzzy"
                        else self.confirm_timeout_seconds)

@@ -121,6 +121,9 @@ body:not([data-anim="high"]) #halo-canvas { display: none; }
 .chip[data-state="offline"] .dot, .chip[data-state="missing"] .dot,
 .chip[data-state="bad"] .dot { background: var(--error); }
 .chip[data-state="local"] .dot { background: var(--blue); }
+/* Gemini Live (10C): premium purple; the pulsing dot = audio streaming NOW */
+.chip[data-state="live"] { border-color: rgba(167, 139, 250, .65); color: #c4b5fd; }
+.chip[data-state="live"] .dot { background: #a78bfa; animation: pulse 1.2s infinite; }
 .chip-click { cursor: pointer; }
 .chip-click:hover { border-color: rgba(59, 130, 246, .5); color: var(--text-hi); }
 
@@ -302,6 +305,18 @@ body:not([data-anim="high"]) #halo-canvas { display: none; }
   color: #f0abfc; letter-spacing: .3px;
 }
 #stt-streaming-badge .dot, #stt-streaming-badge::first-letter { color: #e879f9; }
+/* Gemini Live badge (10C): purple, pulsing — continuous audio to Google */
+#live-badge {
+  margin-top: 10px; font-size: 12px; font-weight: 600;
+  color: #c4b5fd; letter-spacing: .3px;
+  animation: pulse 1.6s infinite;
+}
+#live-badge::first-letter { color: #a78bfa; }
+/* live: mic ring turns purple so it's unmistakable audio is streaming */
+body.live-streaming #mic-btn {
+  border-color: #a78bfa;
+  box-shadow: 0 0 18px rgba(167, 139, 250, .55);
+}
 #stt-interim {
   margin-top: 6px; min-height: 20px; max-width: 80%;
   font-size: 15px; color: var(--text-mid); font-style: italic; opacity: .7;

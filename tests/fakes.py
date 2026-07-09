@@ -136,9 +136,12 @@ class FakeRecorder:
         self.recording = False
         self.starts = 0
         self.cancels = 0
+        self.observer = None
+        self.rolling_seconds = 0.0
 
-    def start(self, on_auto_stop=None):
+    def start(self, on_auto_stop=None, rolling_seconds=0.0):
         self.starts += 1
+        self.rolling_seconds = rolling_seconds
         self.recording = True
 
     def stop(self):
@@ -148,6 +151,12 @@ class FakeRecorder:
     def cancel(self):
         self.cancels += 1
         self.recording = False
+
+    def set_frame_observer(self, cb):
+        self.observer = cb
+
+    def buffered_pcm(self):
+        return b""
 
 
 class FakeMainUI:

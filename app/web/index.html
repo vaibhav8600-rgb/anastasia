@@ -15,6 +15,10 @@
     <h1>Anastasia <span class="dim">(Anna)</span></h1>
   </div>
   <div id="chips">
+    <div class="chip" id="chip-engine" data-state="ok" title="Conversation engine">
+      <svg viewBox="0 0 24 24"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+      <span class="chip-label">Engine: —</span><i class="dot"></i>
+    </div>
     <div class="chip chip-click" id="chip-brain" data-state="local" title="Brain details">
       <svg viewBox="0 0 24 24"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/></svg>
       <span class="chip-label">Brain: —</span><i class="dot"></i>
@@ -104,6 +108,7 @@
   <div id="state-sub">You can speak now or type a command.</div>
   <div id="hands-free-badge" class="hidden">◉ conversation mode — just talk, I'm listening</div>
   <div id="stt-streaming-badge" class="hidden">● streaming live audio to Deepgram</div>
+  <div id="live-badge" class="hidden">● Live — audio streaming to Google</div>
   <div id="stt-interim"></div>
 </main>
 

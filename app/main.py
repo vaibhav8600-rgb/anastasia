@@ -75,6 +75,10 @@ class Controller:
         from app.voice.stt_providers import STTRouter
         self.stt_router = STTRouter(self.config)
         self._active_stream = None         # live Deepgram session, if any
+        from app.agent.engine import EngineSelector
+        self.engine_selector = EngineSelector(self.config)   # 10C three-tier
+        self._live = None                  # active Gemini Live conversation
+        self._live_fallback_noted = False  # one honest info line per session
 
         self.wake_listener = None
         self._wake_warned = False          # one clean warning per session
@@ -518,6 +522,20 @@ class Controller:
             self.chips["stt"] = {"label": "STT: Local (streaming unavailable)",
                                  "state": "warn"}
         # stt_state == "local" (streaming off): no chip, mic chip covers it
+        # Engine chip (10C): which conversation engine handles voice turns.
+        engine, _reason = self.engine_selector.choose()
+        if engine == "gemini_live":
+            self.chips["engine"] = {"label": "Engine: Gemini Live",
+                                    "state": "live" if self._live is not None
+                                             else "ok"}
+        elif getattr(self.config, "engine_mode", "pipeline") == "gemini_live":
+            # asked for Live, fell back — honest amber per 10C.4
+            self.chips["engine"] = {"label": "Engine: Pipeline (Live offline)",
+                                    "state": "warn"}
+        elif engine == "local":
+            self.chips["engine"] = {"label": "Engine: Local", "state": "local"}
+        else:
+            self.chips["engine"] = {"label": "Engine: Pipeline", "state": "ok"}
         if hasattr(self.ui, "dispatch"):
             self.ui.dispatch("status", {"chips": self.chips})
 
@@ -572,6 +590,10 @@ class Controller:
 
     def toggle_mic(self, source: str = "voice") -> None:
         with self._mic_lock:
+            if self._live is not None:
+                # One action ends the whole Live conversation (10A.3/10C).
+                self._end_live_conversation("you tapped the mic")
+                return
             if not self.recorder.recording:
                 if self.speech.speaking:
                     # Barge-in: pressing PTT while Anna talks cuts her off
@@ -583,6 +605,16 @@ class Controller:
                 if self.pipeline.is_processing_command:
                     self.show_info("One moment — I'm finishing the last command.")
                     return
+                # 10C engine selection. Rules still short-circuit locally in
+                # every engine; typed input never comes through here at all.
+                engine, live_reason = self.engine_selector.choose()
+                if engine == "gemini_live":
+                    self._begin_live_conversation(source)
+                    return
+                if live_reason and not self._live_fallback_noted:
+                    self._live_fallback_noted = True
+                    self.show_info(f"Gemini Live isn't available right now "
+                                   f"({live_reason}) — using the regular pipeline.")
                 streaming = self.stt_router.use_streaming()
                 # Start recording IMMEDIATELY — the local buffer is the safety
                 # net and captures audio with no delay. Deepgram (if on) then
@@ -612,6 +644,106 @@ class Controller:
                     generation = self._stt_generation
                     threading.Thread(target=self._finish_recording,
                                      args=(generation,), daemon=True).start()
+
+    # ------------------------------------------- Gemini Live engine (10C)
+    def _begin_live_conversation(self, source: str = "voice") -> None:
+        """Open the mic and a Gemini Live session: one continuous
+        conversation (the model handles turn-taking) until the mic is tapped
+        again or a failure falls back to the pipeline. The recorder keeps a
+        rolling local buffer as the same-turn fallback safety net."""
+        from app.voice.live_engine import LiveEngine
+        if self.speech.speaking:
+            self.pipeline.abort_stream()
+            self.speech.cancel()
+        try:
+            self.recorder.start(
+                on_auto_stop=None,   # continuous: Gemini VADs the turns
+                rolling_seconds=max(15.0, float(self.config.max_record_seconds)))
+        except MicrophoneError as e:
+            self.show_error(str(e))
+            return
+        self._record_source = source
+        self.set_state("thinking", "Connecting to Gemini Live…")
+        live = LiveEngine(self.config, self.agent, self.history,
+                          self.pipeline, self.engine_selector,
+                          memory=self.memory,
+                          show_user=self.show_user,
+                          show_anna=self.show_anna,
+                          show_result=self.show_result,
+                          on_failure=self._on_live_failure)
+        self._live = live   # set before connect so a tap can abort it
+
+        def worker():   # session connect blocks up to ~10s — never the GUI
+            if not live.begin(self.recorder):
+                self._live = None
+                self.show_info("Couldn't reach Gemini Live — this turn uses "
+                               "the regular pipeline.")
+                self._begin_pipeline_recording_after_live_failure()
+                return
+            self._ui(self.ui.set_mic_active, True)
+            self._emit_live_indicator(True)
+            self.set_state("listening", "Live — just talk")
+            self._refresh_chips()
+        threading.Thread(target=worker, daemon=True,
+                         name="anna-live-begin").start()
+
+    def _begin_pipeline_recording_after_live_failure(self) -> None:
+        """The user's mic tap still works: restart as a normal pipeline
+        recording (nothing was spoken yet, so nothing is lost)."""
+        self.recorder.cancel()
+        try:
+            self.recorder.start(on_auto_stop=lambda: self._ui(self.toggle_mic))
+        except MicrophoneError as e:
+            self.show_error(str(e))
+            self.set_state("ready")
+            return
+        self.set_state("listening")
+        self._ui(self.ui.set_mic_active, True)
+        if self.stt_router.use_streaming():
+            self._begin_streaming_stt_async()
+        self._refresh_chips()
+
+    def _end_live_conversation(self, reason: str) -> None:
+        live, self._live = self._live, None
+        if live is not None:
+            live.end(reason)
+            devlog.log(f"Live conversation ended ({reason}) — {live.stats()}")
+        if self.recorder.recording:
+            self.recorder.cancel()
+        self._ui(self.ui.set_mic_active, False)
+        self._emit_live_indicator(False)
+        self.set_state("ready")
+        self._refresh_chips()
+
+    def _on_live_failure(self, detail: str) -> None:
+        """Same-turn fallback (10C.2): tear down Live and run whatever the
+        rolling mic buffer holds through local Whisper -> the pipeline, so
+        the user's turn is not lost. The failure was already counted."""
+        live, self._live = self._live, None
+        if live is None:
+            return   # a mic tap raced the failure — already ended
+        live.end(f"failure: {detail}")
+        self._ui(self.ui.set_mic_active, False)
+        self._emit_live_indicator(False)
+        self.show_info("Live hiccuped — I'm finishing that with my regular "
+                       "pipeline.")
+        self._refresh_chips()
+        if self.recorder.recording:
+            self.set_state("transcribing")
+            generation = self._stt_generation
+            threading.Thread(target=self._finish_recording,
+                             args=(generation,), daemon=True).start()
+        else:
+            self.set_state("ready")
+
+    def _emit_live_indicator(self, active: bool) -> None:
+        """Unmistakable 'audio is streaming to Google' badge (10C; 10D makes
+        it the full consent-grade indicator)."""
+        if hasattr(self.ui, "dispatch"):
+            self.ui.dispatch("live_streaming", {"active": bool(active)})
+
+    def _refresh_chips(self) -> None:
+        self._push_chips(self.chips.get("model", {}).get("state", "offline"))
 
     # ------------------------------------------------ streaming STT (9A)
     def _begin_streaming_stt_async(self) -> None:
@@ -1042,6 +1174,15 @@ class Controller:
                 "deepgram_key_set": self.stt_router.deepgram.configured(),
                 "stt_stream_state": self.stt_router.streaming_status()[0],
                 "stt_stream_reason": self.stt_router.streaming_status()[1],
+                # Conversation engine (10C) — the raw key NEVER goes to
+                # the frontend.
+                "engine_mode": c.engine_mode,
+                "engine_rules_first": c.engine_rules_first,
+                "live_audio_consent": c.live_audio_consent,
+                "gemini_key_masked": self._masked_gemini_key(),
+                "gemini_key_set": self._gemini_key_set(),
+                "gemini_live_model": c.gemini_live_model,
+                "live_state_reason": self.engine_selector.last_reason,
             })
 
     def _masked_groq_key(self) -> str:
@@ -1049,6 +1190,15 @@ class Controller:
         import os
         return mask_key(os.environ.get("GROQ_API_KEY")
                         or self.config.groq_api_key)
+
+    def _masked_gemini_key(self) -> str:
+        from app.llm.providers import mask_key
+        from app.voice.gemini_live import gemini_key
+        return mask_key(gemini_key(self.config))
+
+    def _gemini_key_set(self) -> bool:
+        from app.voice.gemini_live import gemini_key
+        return bool(gemini_key(self.config))
 
     _SETTINGS_FIELDS = {
         "ollama_url": str, "ollama_model": str, "chat_model": str,
@@ -1067,6 +1217,8 @@ class Controller:
         "hands_free_followup": bool,
         "stt_mode": str, "deepgram_model": str,
         "wake_word_backend": str, "wake_word_model": str,
+        "engine_mode": str, "engine_rules_first": bool,
+        "live_audio_consent": bool, "gemini_live_model": str,
     }
     _SETTINGS_CHOICES = {
         "animation_quality": {"low", "medium", "high"},
@@ -1080,6 +1232,7 @@ class Controller:
         "stt_mode": {"streaming", "local"},
         "wake_word_backend": {"whisper", "openwakeword"},
         "wake_word_model": {"tiny", "base", "small"},
+        "engine_mode": {"gemini_live", "pipeline", "local"},
     }
 
     def save_settings(self, settings: dict) -> None:
@@ -1116,6 +1269,12 @@ class Controller:
                     and key != self.config.deepgram_api_key:
                 self.config.deepgram_api_key = key
                 changed.append("deepgram_api_key (hidden)")
+        if "gemini_api_key" in settings:
+            key = str(settings["gemini_api_key"] or "").strip()
+            if "..." not in key and "•" not in key \
+                    and key != self.config.gemini_api_key:
+                self.config.gemini_api_key = key
+                changed.append("gemini_api_key (hidden)")
         if changed:
             self.config.save()
             devlog.log(f"Settings changed: {', '.join(changed)}")
@@ -1269,6 +1428,9 @@ class Controller:
     def shutdown(self) -> None:
         """Release audio/db resources. Safe to call more than once."""
         try:
+            if self._live is not None:
+                # never leave a billed Live session behind (10A.3)
+                self._end_live_conversation("app closing")
             self._hands_free_active = False
             if self._idle_timer is not None:
                 self._idle_timer.cancel()

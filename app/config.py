@@ -108,6 +108,12 @@ class AppConfig(BaseModel):
     gemini_live_voice: str = "Kore"      # prebuilt HD voice; 10D makes this a picker
     live_stall_timeout_s: float = 20.0   # mid-turn silence -> teardown + fallback
     live_half_duplex: bool = True        # drop mic frames while Anna's audio plays
+    # Conversation engine (10C). ALWAYS defaults to pipeline: Live streams
+    # continuous mic audio to Google and bills per minute, so it additionally
+    # requires the explicit live_audio_consent opt-in — never auto-on.
+    engine_mode: str = "pipeline"        # "gemini_live" | "pipeline" | "local"
+    engine_rules_first: bool = True      # simple commands stay local + instant
+    live_audio_consent: bool = False     # billing + continuous-audio opt-in
     ollama_timeout: int = 20
     ollama_keep_alive: str = "30m"   # keeps the model loaded between requests
     ollama_num_predict: int = 220    # hard cap on generated tokens

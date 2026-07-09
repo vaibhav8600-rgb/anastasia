@@ -234,6 +234,11 @@ class SpeechOutput:
     # --------------------------------------------------------- backends
     def _speak(self, text: str) -> None:
         backend = self.config.tts_backend
+        if backend == "deepgram" and \
+                getattr(self.config, "engine_mode", "pipeline") == "local":
+            # Local engine floor (10C): reply text stays on-device too.
+            self._speak_piper_or_windows(text)
+            return
         if backend == "deepgram":
             from app.voice.tts_deepgram import deepgram_tts_available
             if not deepgram_tts_available(self.config):

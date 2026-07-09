@@ -53,6 +53,8 @@ def deepgram_key(config) -> str:
 def stt_stream_allowed(config) -> tuple[bool, str]:
     """Live-audio privacy gate: streaming to Deepgram is only permitted in
     streaming mode with a key. Anything else must stay on local Whisper."""
+    if getattr(config, "engine_mode", "pipeline") == "local":
+        return False, "local engine — audio stays on-device"
     if getattr(config, "stt_mode", "local") != "streaming":
         return False, "streaming mode is off — audio stays on-device"
     if not deepgram_key(config):

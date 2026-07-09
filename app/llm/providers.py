@@ -293,7 +293,10 @@ class BrainRouter:
 
     # ----------------------------------------------------------- state
     def mode(self) -> str:
-        """Effective mode: hybrid only with a key configured."""
+        """Effective mode: hybrid only with a key configured. The local
+        engine floor (10C) forces local_only regardless of brain_mode."""
+        if getattr(self.config, "engine_mode", "pipeline") == "local":
+            return "local_only"
         if getattr(self.config, "brain_mode", "hybrid") == "local_only":
             return "local_only"
         return "hybrid" if self.groq.configured() else "local_only"
