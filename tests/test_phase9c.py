@@ -92,8 +92,11 @@ def test_idle_timeout_ends_loop_with_signoff():
     controller.speech.speak_async = signoffs.append
     controller._hands_free_active = True
     controller._reset_idle_timer()
-    deadline = time.time() + 1.0
-    while controller._hands_free_active and time.time() < deadline:
+    # Poll for the sign-off, not the flag: stop_hands_free() clears the flag
+    # FIRST (so no new mic turn starts) and speaks last — polling on the flag
+    # races that gap under full-suite CPU load.
+    deadline = time.time() + 5.0
+    while not signoffs and time.time() < deadline:
         time.sleep(0.02)
     assert controller._hands_free_active is False
     assert any("right here" in s for s in signoffs)
