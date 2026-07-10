@@ -259,6 +259,11 @@ class AppConfig(BaseModel):
     # Anna pauses and checks in rather than running an unbounded chain.
     task_max_steps_before_checkin: int = 5
 
+    # Email (11E). "auto" -> Gmail in the browser if a browser is your default,
+    # else the desktop client (Outlook) via mailto. No API/OAuth required;
+    # Anna opens a pre-filled draft and the send is a confirmed click.
+    email_provider: str = "auto"         # auto | gmail | outlook
+
     # Tools
     default_browser: str = ""            # empty = system default; or alias key e.g. "chrome"
     screenshot_dir: str = str(Path.home() / "Pictures" / "AnnaScreenshots").replace("\\", "/")

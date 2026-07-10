@@ -49,6 +49,9 @@ SAFE_TOOLS = {
     "browser_get_visible_links", "browser_navigate",
     "click_control", "type_into_control",
     "browser_find_and_click", "browser_type_into",
+    # Email/messaging (11E). Opening a DRAFT is safe (nothing is sent); the
+    # actual send is gated in its own branch (recipient check + confirmation).
+    "compose_email", "read_window_text",
 }
 
 # Vision tools that will analyze a frame — overriding the sensitive-content
@@ -67,6 +70,28 @@ CONTROL_TOOLS = CLICK_TOOLS | TYPE_TOOLS
 # misfiring planner therefore cannot click "Send" without asking.
 DESTRUCTIVE_TARGETS = ("send", "submit", "pay", "delete", "confirm", "install",
                        "post", "purchase", "transfer", "approve")
+
+# 11E / principle 9: actual money movement is BLOCKED, not merely confirmed.
+# A bare "Pay" button is a destructive-target (confirm); an explicit payment
+# phrase — "Pay $500", "confirm payment", "transfer funds", "place order" —
+# is refused outright. Reading a banking page is fine; MOVING money is not.
+PAYMENT_BLOCK_PATTERNS = (
+    r"\bpay\s*(?:now|bill|\$|₹|€|£|\d)",
+    r"\bconfirm\s+(?:payment|purchase|order|transfer)",
+    r"\bcomplete\s+(?:payment|purchase|order|checkout)",
+    r"\bplace\s+(?:the\s+)?order\b",
+    r"\bproceed\s+to\s+(?:pay|checkout|payment)",
+    r"\b(?:transfer|send|wire)\s+(?:money|funds|\$|₹|€|£|\d)",
+    r"\bmake\s+(?:a\s+)?payment\b",
+    r"\bbuy\s+now\b", r"\bcheckout\b", r"\bpay\s+and\b",
+)
+
+
+def is_payment_action(text: str) -> bool:
+    if not text:
+        return False
+    lowered = str(text).lower()
+    return any(re.search(pat, lowered) for pat in PAYMENT_BLOCK_PATTERNS)
 
 
 def destructive_targets(config) -> tuple:
@@ -133,12 +158,17 @@ def _resolve_target(plan, config):
     return resolved
 
 # Tools that always require explicit user confirmation.
-CONFIRM_TOOLS = {"run_terminal", "window_control", "delete_files"}
+CONFIRM_TOOLS = {"run_terminal", "window_control", "delete_files",
+                 "send_email", "send_message"}   # 11E: gated in their own branch
 
 # Tools/intents that are refused outright in the MVP.
 BLOCKED_TOOLS = {
     "shutdown", "restart", "shutdown_computer", "restart_computer",
-    "send_email", "send_message", "submit_form", "make_payment",
+    # 11E: send_email / send_message are NO LONGER blocked outright — they run
+    # only after a recipient check + strong confirmation (see EMAIL_SEND_TOOLS
+    # below), and the actual send is a validated click on the real Send button.
+    # Payments/form-submits stay blocked: Anna never moves money.
+    "submit_form", "make_payment", "pay", "make_transfer", "bank_transfer",
     "install_software", "kill_process", "stop_process",
     "change_settings", "change_system_settings",
     "move_files", "rename_files",
@@ -267,6 +297,15 @@ def validate_action(plan, config) -> SafetyResult:
         confidence = float(resolved.get("confidence", 1.0))
         hint = str(args.get("hint") or args.get("target") or "")
 
+        # 11E / principle 9: clicking an actual payment/transfer control is
+        # BLOCKED outright, not merely confirmed. (A bare "Pay" button is
+        # handled as a destructive-target below; an explicit money-movement
+        # phrase — "Pay $500", "confirm payment", "transfer funds" — is refused.)
+        if is_payment_action(name) or is_payment_action(hint):
+            return blocked("That looks like a payment or money transfer — I "
+                           "won't do that. I can help you get to the page, but "
+                           "you complete any payment yourself.")
+
         result_extra = {"target": resolved, "confidence": confidence}
         if is_destructive_target(name, config) or is_destructive_target(hint, config):
             requires = True
@@ -294,6 +333,45 @@ def validate_action(plan, config) -> SafetyResult:
             requires = True
         return SafetyResult(allowed=True, requires_confirmation=requires,
                             risk_level=risk, reason=reason, **result_extra)
+
+    elif tool == "send_email":
+        # 11E: sending is ALWAYS preview + strong confirmation, and never
+        # happens without a clear recipient ADDRESS. Multiple recipients are
+        # allowed but the confirmation names them all. Composing a draft is a
+        # different, ungated tool that sends nothing.
+        from app.tools.email_tools import recipient_status
+        to = args.get("to") or args.get("recipient") or args.get("recipients")
+        emails, status = recipient_status(to)
+        if status in ("missing", "ambiguous"):
+            return blocked("I won't send an email without a clear recipient "
+                           "address — tell me exactly who it goes to.")
+        body = str(args.get("body") or args.get("text") or "")
+        reason = (f"Send this email to {', '.join(emails)}"
+                  + (" — multiple recipients" if status == "multiple" else "")
+                  + "?")
+        return SafetyResult(allowed=True, requires_confirmation=True,
+                            risk_level="high", reason=reason,
+                            destructive_target=True,
+                            target={"to": emails,
+                                    "subject": str(args.get("subject") or ""),
+                                    "body": body[:400], "recipient_status": status})
+
+    elif tool == "send_message":
+        # Messaging (Teams/WhatsApp/etc). The recipient is a contact NAME, not
+        # an address, but a message still can't go out without one, and the
+        # send is always confirmed (also the app's "Send" button is a
+        # destructive-target, so a click-based send is gated too).
+        to = str(args.get("to") or args.get("recipient")
+                 or args.get("chat") or "").strip()
+        if not to:
+            return blocked("Who should I message? I won't send without a "
+                           "named recipient.")
+        body = str(args.get("body") or args.get("text") or args.get("message") or "")
+        return SafetyResult(allowed=True, requires_confirmation=True,
+                            risk_level="high",
+                            reason=f"Send this message to {to}?",
+                            destructive_target=True,
+                            target={"to": [to], "body": body[:400]})
 
     elif tool in VISION_LOOK_TOOLS:
         # 11B.4: looking at a screen Anna flagged as sensitive (passwords,

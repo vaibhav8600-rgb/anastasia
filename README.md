@@ -282,6 +282,22 @@ python app\main.py --doctor   # health check
   showed you needs fresh approval before it runs, and if a step fails she stops
   and tells you which one and why — she never ploughs on past a failure.
 
+- **Email, messaging, and other apps.** Say "email rahul@x.com saying I'll be
+  late" and Anna opens a **pre-filled draft** — Gmail in your browser, or your
+  desktop client (Outlook) via `mailto:` — for you to review. **No API or
+  sign-in setup is required.** Nothing is sent by opening a draft; the **send**
+  is a separate, always-confirmed step that needs the strong "Anna approve"
+  phrase, refuses to go out without a clear recipient, and names every
+  recipient when there's more than one. Set `email_provider` (auto/gmail/
+  outlook) in config.
+
+  Messaging apps (Teams, WhatsApp, Telegram) follow the same draft → preview →
+  confirm → send pattern, and general apps work through the same UIA control
+  (11C) — "in Notepad type…", "in Calculator press…". **Payments and money
+  transfers are refused outright**, never merely confirmed: Anna will open your
+  bank's page and read it, but she will not click Pay/Transfer/Place-order —
+  you complete any payment yourself.
+
 - Full command list: [SKILL.md](SKILL.md).
 
 ## Troubleshooting

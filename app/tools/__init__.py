@@ -29,7 +29,7 @@ _LOADED = False
 _TOOL_MODULES = [
     "open_app", "file_tools", "keyboard_mouse", "clipboard_tools",
     "screenshot", "browser", "terminal", "window_control", "vision_tools",
-    "control_tools",
+    "control_tools", "email_tools",
 ]
 
 

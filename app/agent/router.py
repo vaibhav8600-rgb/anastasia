@@ -182,6 +182,19 @@ def match_rule(raw: str, config, memory=None) -> Optional[ActionPlan]:
         return plan("look_at_screen", args=args,
                     msg="Taking a look at your screen.")
 
+    # --- email (11E): "email <who> saying/that <body>" -> open a draft ---
+    m = re.match(r"(?:email|e-?mail|write (?:an? )?email to|send (?:an? )?email to)\s+"
+                 r"(.+?)(?:\s+(?:saying|that says?|and say|about|with subject|:)\s+(.+))?$",
+                 orig, flags=re.IGNORECASE)
+    if m:
+        who = m.group(1).strip().rstrip(",")
+        rest = (m.group(2) or "").strip()
+        args = {"to": who}
+        if rest:
+            args["body"] = rest
+        return plan("compose_email", args=args,
+                    msg=f"Opening an email draft to {who}.")
+
     # --- clipboard --------------------------------------------------
     if re.search(r"\bsummari[sz]e\b.*\bclipboard\b", t):
         return plan("summarize_clipboard", msg="Let me read that and sum it up for you.")

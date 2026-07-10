@@ -91,8 +91,10 @@ def test_random_yes_without_pending_confirmation_does_nothing():
 def test_confirmation_expires_after_timeout_and_resets_state():
     pipeline, ui, _speech, agent = pending_close_chrome(
         confirm_timeout_seconds=0.1)
+    # Poll the user-visible message, not `pending`: expiry clears pending
+    # first and speaks last, so polling on the flag races that gap.
     deadline = time.time() + 5
-    while pipeline.pending is not None and time.time() < deadline:
+    while CONFIRM_TIMEOUT_MESSAGE not in ui.infos and time.time() < deadline:
         time.sleep(0.02)
     assert pipeline.pending is None
     assert pipeline.confirm.state is ConfirmState.IDLE
