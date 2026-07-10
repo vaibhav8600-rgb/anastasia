@@ -273,6 +273,15 @@ python app\main.py --doctor   # health check
   phrase. **Password fields** (detected via UIA's `IsPassword`) are never typed
   into unasked and never read aloud or logged.
 
+- **Multi-step tasks are checkpointed, never an autonomous run.** For a task
+  like "draft an email to Rahul", Anna proposes a short step list, then runs it
+  **one step at a time**: she re-checks the screen before each step, every step
+  still passes the same safety validator, the final Send is always confirmed,
+  and she **pauses to check in** after a few steps (`task_max_steps_before_checkin`,
+  default 5) rather than barrelling ahead. Any step that wasn't in the plan she
+  showed you needs fresh approval before it runs, and if a step fails she stops
+  and tells you which one and why — she never ploughs on past a failure.
+
 - Full command list: [SKILL.md](SKILL.md).
 
 ## Troubleshooting

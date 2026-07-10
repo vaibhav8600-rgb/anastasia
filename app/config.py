@@ -248,6 +248,10 @@ class AppConfig(BaseModel):
                                  "install", "post", "purchase", "transfer",
                                  "approve"])
 
+    # Guided multi-step tasks (11D). After this many steps without finishing,
+    # Anna pauses and checks in rather than running an unbounded chain.
+    task_max_steps_before_checkin: int = 5
+
     # Tools
     default_browser: str = ""            # empty = system default; or alias key e.g. "chrome"
     screenshot_dir: str = str(Path.home() / "Pictures" / "AnnaScreenshots").replace("\\", "/")
