@@ -96,18 +96,23 @@ class VisionService:
         import time
         self.last_capture_at = time.time()
         try:
+            is_camera = frame.source == "camera"
             want_cloud = allow_cloud and self.cloud_enabled()
-            # A FAST, downscaled OCR pass drives the privacy gate. Full OCR of
-            # a dense desktop is 15-20s, so we never make the user wait for it
-            # when cloud will describe the screen anyway.
-            scan_text = self._ocr_text(frame, fast=True)
-            sensitive, reason = looks_sensitive(scan_text)
-            if sensitive and not allow_sensitive:
-                # Refuse to analyze AT ALL — not locally, not in the cloud.
-                devlog.warn("Vision: sensitive content detected — not analyzed.")
-                return VisionResult(source=frame.source, scope=frame.scope,
-                                    window_title=frame.window_title,
-                                    needs_ack=True, ack_reason=reason)
+            # A camera frame is a PHOTO of the real world — OCR is pointless
+            # and slow on it, and there's no on-screen text to be a privacy
+            # risk. Skip straight to cloud description (person/object/scene).
+            # For a SCREEN, a fast downscaled OCR drives the privacy gate.
+            if is_camera:
+                scan_text = ""
+            else:
+                scan_text = self._ocr_text(frame, fast=True)
+                sensitive, reason = looks_sensitive(scan_text)
+                if sensitive and not allow_sensitive:
+                    # Refuse to analyze AT ALL — not locally, not in the cloud.
+                    devlog.warn("Vision: sensitive content detected — not analyzed.")
+                    return VisionResult(source=frame.source, scope=frame.scope,
+                                        window_title=frame.window_title,
+                                        needs_ack=True, ack_reason=reason)
 
             used_cloud = False
             summary = ""
@@ -120,8 +125,10 @@ class VisionService:
                     devlog.warn(f"Vision: cloud description failed, falling "
                                 f"back to local ({' '.join(str(e).split())[:100]})")
             if not summary:
-                # Local-only (or cloud failed): now pay for the full OCR.
-                text = self._ocr_text(frame) or scan_text
+                # Local-only (or cloud failed). A screen: pay for full OCR. A
+                # camera: nothing to OCR — say we need cloud vision to describe.
+                if not is_camera:
+                    text = self._ocr_text(frame) or scan_text
                 summary = self._local_summary(frame, text)
 
             saved_path = self._save(frame) if (save or getattr(
@@ -137,11 +144,12 @@ class VisionService:
         """Fully-local description: window title + OCR text, or an honest
         admission when no OCR engine is installed."""
         if frame.source == "camera":
-            if text:
-                return f"I can make out some text in the shot: {text[:300]}"
-            return ("I took a single photo, but without cloud vision I can only "
-                    "read text, not describe a scene. Turn on cloud vision in "
-                    "Settings if you'd like me to describe what's in it.")
+            # Describing a person/object/scene needs cloud vision — local OCR
+            # can't see a scene, only text.
+            return ("I took a photo, but to describe what's in it I need cloud "
+                    "vision turned on (Settings → Vision → send frames to "
+                    "Gemini). Right now that's off, so the image stays on this "
+                    "PC and I can't tell you what I see.")
         # For a whole-desktop grab the focused window title is NOT what we're
         # looking at (it was reading "On Anastasia (Anna) I can read…" while
         # capturing the entire desktop).

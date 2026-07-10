@@ -173,14 +173,17 @@ async function captureCameraFrame(requestId) {
     canvas.height = video.videoHeight || 480;
     const ctx = canvas.getContext("2d");
 
-    // Most webcams emit black for the first few hundred ms. Keep pulling
-    // frames until one has actual content, or give up after ~2.5s.
-    const deadline = Date.now() + 2500;
+    // External/USB webcams can emit black for 1-3s after opening (auto-exposure
+    // ramp). Give it a short warm-up, then keep pulling frames until one has
+    // real content, up to ~6s. Only fall back to a black frame if it never
+    // produces one — the Python side then retries with a fresh open.
+    await sleep(350);
+    const deadline = Date.now() + 6000;
     do {
       await nextVideoFrame(video);
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       if (!canvasIsBlank(canvas)) break;
-      await sleep(100);
+      await sleep(120);
     } while (Date.now() < deadline);
 
     dataUrl = canvas.toDataURL("image/jpeg", 0.85);

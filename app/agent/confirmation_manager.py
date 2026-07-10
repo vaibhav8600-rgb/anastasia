@@ -257,17 +257,13 @@ class ConfirmationManager:
         return pending
 
     # --------------------------------------------------- phrase parsing
-    def handle_utterance(self, raw_text: str) -> Outcome:
-        """Classify an utterance heard while a confirmation is pending.
-
-        Pure: never executes and never resolves the pending action — the
-        caller acts on the Outcome. Pass the RAW text (see module docstring).
-        """
-        with self._lock:
-            pending = self._pending
-        if pending is None:
-            return Outcome.NONE           # 11A.1 gate: no pending, no parsing
-
+    def classify(self, raw_text: str, strong_required: bool = None) -> Outcome:
+        """Pure classification of an utterance — no state change, no side
+        effects, so it's safe to call repeatedly (e.g. scanning n-grams of a
+        Live transcript). Pass the RAW text (see module docstring)."""
+        if strong_required is None:
+            pending = self.pending
+            strong_required = bool(pending.strong_required) if pending else False
         text = _normalize(raw_text)
         if not text:
             return Outcome.UNCLEAR
@@ -292,13 +288,22 @@ class ConfirmationManager:
         if casual in DETAILS_PHRASES:
             return Outcome.DETAILS
         if casual in STANDARD_APPROVE:
-            if pending.strong_required:
-                return Outcome.NEEDS_STRONG
-            return Outcome.APPROVED
-
-        with self._lock:
-            self.reprompts += 1
+            return Outcome.NEEDS_STRONG if strong_required else Outcome.APPROVED
         return Outcome.UNCLEAR
+
+    def handle_utterance(self, raw_text: str) -> Outcome:
+        """Classify an utterance heard while a confirmation is pending, and
+        track ambiguous replies for the caller's re-ask logic. The caller
+        acts on the Outcome — this never executes or resolves the action."""
+        with self._lock:
+            pending = self._pending
+        if pending is None:
+            return Outcome.NONE           # 11A.1 gate: no pending, no parsing
+        outcome = self.classify(raw_text, pending.strong_required)
+        if outcome is Outcome.UNCLEAR:
+            with self._lock:
+                self.reprompts += 1
+        return outcome
 
     # ------------------------------------------------------------ views
     def summary(self) -> str:

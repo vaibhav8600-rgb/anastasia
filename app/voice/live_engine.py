@@ -224,7 +224,47 @@ class LiveEngine:
         if not self._user_buf:
             self._turn_rule_done = False     # a new user turn begins
         self._user_buf += text
+        # A confirmation card up while a Live session runs: the user's spoken
+        # "approve"/"cancel" is heard by Gemini, not the local parser — so
+        # voice approval was impossible in Live mode (the model just retried
+        # and the user had to click). Resolve it here from the transcript.
+        if self.pipeline is not None and self.pipeline.confirm.has_pending():
+            if self._resolve_confirmation_by_voice():
+                return
         self._maybe_rule_short_circuit()
+
+    def _resolve_confirmation_by_voice(self) -> bool:
+        """A confirmation is pending; resolve it from what the user just said.
+        The approval word can sit anywhere in a spoken sentence ("yeah okay
+        cancel that"), so we scan every 1-3 word window with the pure
+        classifier. Cancel wins ties — the safe direction. Returns True if
+        the utterance was a confirmation phrase and was consumed."""
+        from app.agent.confirmation_manager import Outcome, _normalize
+        confirm = self.pipeline.confirm
+        pending = confirm.pending
+        if pending is None:
+            return False
+        words = _normalize(self._user_buf).split()
+        if not words:
+            return False
+        grams = [" ".join(words[i:i + n])
+                 for n in (1, 2, 3) for i in range(len(words) - n + 1)]
+        found = {confirm.classify(g, pending.strong_required) for g in grams}
+
+        if Outcome.CANCELLED in found:
+            self._user_buf = ""
+            self.pipeline.cancel_pending(action_id=pending.id)
+            return True
+        if Outcome.APPROVED in found:
+            self._user_buf = ""
+            self.pipeline.approve_pending(action_id=pending.id)
+            return True
+        if Outcome.NEEDS_STRONG in found:
+            self._user_buf = ""
+            self.notify("That one's destructive — say “Anna approve” to go "
+                        "ahead, or “cancel”.")
+            return True
+        return False   # not a confirmation phrase — let Gemini keep talking
 
     def _on_output_transcript(self, text: str) -> None:
         self._flush_user()
@@ -358,6 +398,9 @@ class LiveEngine:
             plan, safety, f"Gemini Live: {plan.tool_name}", callback)
         if not accepted:
             return False   # another confirmation is already pending
+        # Discard anything said before the card so the NEXT words are read as
+        # the answer, and let Gemini voice the prompt while we listen.
+        self._user_buf = ""
         done.wait(self.pipeline.confirm_timeout_seconds + 5.0)
         return outcome["approved"]
 

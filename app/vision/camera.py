@@ -109,27 +109,41 @@ class CameraSession:
             except Exception:
                 pass
 
-    def capture_once(self) -> VisionFrame:
+    def capture_once(self, attempts: int = 2) -> VisionFrame:
         """Open -> one frame -> stop. The stream is closed in `finally`, so a
-        failure mid-read can never leave the camera (or its light) on."""
+        failure mid-read can never leave the camera (or its light) on.
+
+        Many webcams emit a black frame for the first few hundred ms after
+        opening, so a blank frame is retried once (a fresh open each time,
+        with a short warm-up) before we give up honestly."""
         if self.opener is None:
             raise CameraUnavailable(INSTALL_HINT)
+        import time as _t
+        image = None
         with self._lock:                  # never two cameras at once
             self._indicate(True)
-            stream = None
             try:
-                stream = self.opener()
-                image = stream.read()
+                for attempt in range(max(1, attempts)):
+                    stream = None
+                    try:
+                        stream = self.opener()
+                        candidate = stream.read()
+                    finally:
+                        if stream is not None:
+                            stream.stop()     # immediately, per Mira's pattern
+                    if not is_blank(candidate):
+                        image = candidate
+                        break
+                    if attempt + 1 < max(1, attempts):
+                        devlog.log(f"Vision: camera gave a blank frame "
+                                   f"(attempt {attempt + 1}) — retrying.")
+                        _t.sleep(0.5)         # let the sensor warm up
             finally:
-                if stream is not None:
-                    stream.stop()         # immediately, per Mira's pattern
                 self._indicate(False)
-        if is_blank(image):
-            # Sensor wasn't ready (or the lens is covered). Say so — never
-            # pass a black rectangle off as a photo, and never save it.
+        if image is None:
             raise CameraUnavailable(
-                "The camera gave me a blank frame — it may still be warming "
-                "up, covered, or in use by another app. Try once more?")
+                "The camera only gave me blank frames — it may be covered, "
+                "disabled, or in use by another app. Try again in a moment?")
         frame = VisionFrame(image=image, source="camera", scope="camera",
                             width=image.size[0], height=image.size[1])
         devlog.log(f"Vision: captured {frame.describe()} (stream closed)")

@@ -383,7 +383,7 @@ def test_blank_camera_frame_is_rejected_not_described():
     log = {"stops": 0}
     session = CameraSession(make_config(), opener=lambda: BlackStream(log))
     with pytest.raises(CameraUnavailable) as excinfo:
-        session.capture_once()
+        session.capture_once(attempts=1)   # single attempt: no retry here
     assert "blank" in str(excinfo.value).lower()
     assert log["stops"] == 1              # the camera still gets turned off
     assert not session.active
