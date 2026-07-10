@@ -116,6 +116,8 @@ function renderEntry(p, role) {
   appendMessage(annaMessageHtml(p), "anna");
 }
 
+let lastConfirm = null;   // payload of the card currently on screen (11A)
+
 function confirmCardHtml(p) {
   const args = JSON.stringify(p.arguments || {});
   if (p.kind === "fuzzy") return `<div class="confirm-card fuzzy" data-confirm-id="${esc(p.id)}">
@@ -126,16 +128,47 @@ function confirmCardHtml(p) {
               <button class="ghost-btn" data-confirm="${esc(p.id)}" data-approved="0">No</button>
             </div>
           </div>`;
-  return `<div class="confirm-card" data-confirm-id="${esc(p.id)}">
+  // 11A: destructive-tier actions need the strong phrase; say so plainly.
+  const phrase = p.strong_required
+    ? `Say <b>“Anna approve”</b> or <b>“cancel”</b> — a plain “yes” won't do for this one.`
+    : `You can also say <b>“approve”</b> or <b>“cancel”</b>.`;
+  return `<div class="confirm-card${p.strong_required ? " strong" : ""}" data-confirm-id="${esc(p.id)}">
             <h4>⚠ Approval required <span class="dim">· risk: ${esc(p.risk || "?")}</span></h4>
             <code>${esc(p.tool)} ${esc(args)}</code>
             <div class="confirm-msg">${esc(p.message || "Do you want me to go ahead?")}</div>
+            <div class="confirm-hint">${phrase}</div>
+            <div class="confirm-details hidden"></div>
             <div class="confirm-actions">
               <button class="ghost-btn approve" data-confirm="${esc(p.id)}" data-approved="1"
                       style="border-color:rgba(52,211,153,.5);color:#a7f3d0">Run it</button>
               <button class="ghost-btn" data-confirm="${esc(p.id)}" data-approved="0">Cancel</button>
+              <button class="ghost-btn details-btn" data-details="${esc(p.id)}">Show details</button>
             </div>
           </div>`;
+}
+
+/* 11A: expand a pending card with the full target/argument detail. Called by
+   the "Show details" button and by the voice phrase "show details". */
+function expandConfirmDetails(p) {
+  const card = document.querySelector(
+    `.confirm-card[data-confirm-id="${CSS.escape(String(p.id))}"]`);
+  if (!card) return;
+  const box = card.querySelector(".confirm-details");
+  if (!box) return;
+  const rows = Object.entries(p.arguments || {})
+    .map(([k, v]) => `<tr><td class="dim">${esc(k)}</td><td>${esc(String(v))}</td></tr>`)
+    .join("");
+  const extra = Object.entries((p.details || {}))
+    .map(([k, v]) => `<tr><td class="dim">${esc(k)}</td><td>${esc(String(v))}</td></tr>`)
+    .join("");
+  box.innerHTML = `
+    <table>
+      <tr><td class="dim">heard</td><td>${esc(p.transcript || "")}</td></tr>
+      <tr><td class="dim">tool</td><td>${esc(p.tool || "")}</td></tr>
+      <tr><td class="dim">risk</td><td>${esc(p.risk || "?")}</td></tr>
+      ${rows}${extra}
+    </table>`;
+  box.classList.remove("hidden");
 }
 
 /* --------------------------------------------------------------- devlog */
@@ -627,8 +660,17 @@ const handlers = {
   anna_message: (p) => renderEntry(p, "anna"),
   action_result: (p) => renderEntry(p, "anna"),
 
-  confirm_request: (p) => appendMessage(confirmCardHtml(p), "anna"),
+  confirm_request: (p) => {
+    lastConfirm = p;
+    appendMessage(confirmCardHtml(p), "anna");
+  },
+  // 11A: "show details" (voice) expands the same card the button expands.
+  confirm_details: (p) => {
+    lastConfirm = p;
+    expandConfirmDetails(p);
+  },
   confirm_resolved: () => {
+    lastConfirm = null;
     document.querySelectorAll(".confirm-card:not(.resolved)")
       .forEach(c => c.classList.add("resolved"));
   },
@@ -800,6 +842,7 @@ const handlers = {
     }
     messagesEl().innerHTML = "";
     (p.conversation || []).forEach(m => renderEntry(m, m.role));
+    lastConfirm = p.pending || null;
     if (p.pending) appendMessage(confirmCardHtml(p.pending), "anna");
     $("#dev-log").innerHTML = "";
     (p.devlog || []).forEach(appendDevlog);
@@ -911,6 +954,11 @@ document.addEventListener("DOMContentLoaded", () => {
       call("confirm", parseInt(confirmBtn.dataset.confirm, 10),
            confirmBtn.dataset.approved === "1");
       confirmBtn.closest(".confirm-card").classList.add("resolved");
+      return;
+    }
+    const detailsBtn = e.target.closest("[data-details]");
+    if (detailsBtn) {                       // 11A: same expansion as voice
+      if (lastConfirm) expandConfirmDetails(lastConfirm);
       return;
     }
     const viewBtn = e.target.closest("[data-open-path]");

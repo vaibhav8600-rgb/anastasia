@@ -18,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.agent.confirmation_manager import Outcome
 from app.agent.conversation import Conversation
 from app.agent.devlog import devlog
 from app.agent.history import History
@@ -30,8 +31,9 @@ from app.voice.recorder import (MicrophoneError, Recorder,
                                 microphone_dropdown_state)
 from app.voice.speech_output import SpeechOutput
 
-APPROVE_WORDS = {"approve", "approved", "yes", "yeah", "yep", "haan", "confirm", "go ahead", "do it"}
-CANCEL_WORDS = {"cancel", "no", "nope", "stop", "abort", "never mind", "nevermind"}
+# Approval/cancel phrase parsing lives in the confirmation manager (11A) so
+# every entry point — typed, voice turn, and the voice-confirm button —
+# shares one set of rules, including the strong phrase for destructive tiers.
 
 
 def _confidence_is_low(confidence, thresholds=None) -> bool:
@@ -106,7 +108,9 @@ class Controller:
 
         self.pipeline = CommandPipeline(
             config=self.config, agent=self.agent, history=self.history,
-            ui=self, speech=self.speech, cancel_recording=self.cancel_recording)
+            ui=self, speech=self.speech, cancel_recording=self.cancel_recording,
+            confirm_timeout_seconds=float(
+                getattr(self.config, "confirmation_timeout_s", 30.0)))
         if hasattr(self.agent, "brain"):
             # live Brain chip updates on failover / circuit transitions
             self.agent.brain.on_state_change = self._on_brain_state
@@ -178,15 +182,54 @@ class Controller:
     def hide_confirmation(self) -> None:
         self._ui(self.ui.confirm_panel.hide)
 
+    def show_confirmation_details(self, payload: dict) -> None:
+        """11A.2 'show details' — expand the pending card in place."""
+        if hasattr(self.ui, "dispatch"):
+            self.ui.dispatch("confirm_details", payload)
+
     def _on_speaking_changed(self, active: bool) -> None:
         if active:
             self.set_state("speaking")
-        elif not self.pipeline.is_processing_command and self.pipeline.pending is None:
-            if self._hands_free_active:
-                # Continuous loop: the instant Anna finishes, reopen the mic.
-                self._hands_free_continue()
-            else:
-                self.set_state("ready")
+            return
+        if self.pipeline.is_processing_command:
+            return
+        if self.pipeline.pending is not None:
+            # 11A.3: a card is up. Don't start a NEW turn — but in hands-free
+            # reopen the mic so "approve"/"cancel" can actually be spoken
+            # (listening_for_confirmation). PTT users press the hotkey.
+            self._listen_for_confirmation()
+            return
+        if self._hands_free_active:
+            # Continuous loop: the instant Anna finishes, reopen the mic.
+            self._hands_free_continue()
+        else:
+            self.set_state("ready")
+
+    def _listen_for_confirmation(self) -> None:
+        """Reopen the mic to hear the approve/cancel phrase while a
+        confirmation card is pending. Opt-in (`confirmation_voice_listen`),
+        because it opens the microphone on its own. Hands-free only: in PTT
+        mode the user presses the hotkey, and in a Gemini Live session the
+        mic is already open (tapping it there would end the conversation)."""
+        if not getattr(self.config, "confirmation_voice_listen", False):
+            return
+        if not self._hands_free_active or self._live is not None:
+            return
+
+        def worker():
+            import time as _t
+            from app.voice import audio_gate
+            _t.sleep(audio_gate.TAIL_SECONDS + 0.1)   # let the echo tail clear
+            if not self._hands_free_active or self._live is not None:
+                return
+            if not self.pipeline.confirm.has_pending():
+                return          # already approved/cancelled/expired
+            if self.recorder.recording or self.speech.speaking \
+                    or self.pipeline.is_processing_command:
+                return
+            self._ui(lambda: self.toggle_mic("voice"))
+        threading.Thread(target=worker, daemon=True,
+                         name="anna-confirm-listen").start()
 
     def arm_followup(self) -> None:
         """Pipeline hook (kept for compatibility). Continuous hands-free (9C)
@@ -954,8 +997,14 @@ class Controller:
         self.pipeline.cancel_pending()
 
     def voice_confirm(self) -> None:
-        """Record ~3s, transcribe, look for approve/cancel keywords."""
+        """Record ~3s and route the raw utterance through the confirmation
+        manager (11A). It — not this method — decides approve/cancel/repeat/
+        details, and enforces the strong phrase on destructive-tier actions,
+        so this button can never become a softer approval path."""
         def worker():
+            if not self.pipeline.confirm.has_pending():
+                self.show_info("There's nothing waiting for your approval.")
+                return
             self.set_state("listening", "Say “approve” or “cancel”…")
             try:
                 self.recorder.start()
@@ -967,15 +1016,11 @@ class Controller:
                 self.show_error("Voice confirm didn't work — use the buttons.")
                 self.set_state("waiting_confirmation")
                 return
-            answer = text.lower().strip(" .,!?")
             devlog.log(f"Voice confirm heard: {text!r}")
-            if any(w in answer for w in APPROVE_WORDS):
-                self._ui(self.approve_pending)
-            elif any(w in answer for w in CANCEL_WORDS):
-                self._ui(self.cancel_pending)
-            else:
-                self.show_info("I didn't catch approve or cancel — use the buttons.")
-                self.set_state("waiting_confirmation")
+            outcome = self.pipeline.handle_confirmation_utterance(text)
+            if outcome in (Outcome.APPROVED, Outcome.CANCELLED):
+                return          # the pipeline already resolved + reset state
+            self.set_state("waiting_confirmation")
         threading.Thread(target=worker, daemon=True).start()
 
     # ------------------------------------------------------- wake word

@@ -103,11 +103,15 @@ class UIBridge:
              on_approve=None, on_cancel=None, on_voice=None,
              kind="safety", message="") -> None:
         """Render a safety approval or neutral fuzzy-confirmation card."""
+        from app.agent.confirmation_manager import requires_strong_approval
         self.dispatch("confirm_request", {
             "id": action_id, "transcript": transcript,
             "tool": plan.tool_name, "arguments": plan.arguments,
             "risk": safety.risk_level,
             "kind": kind,
+            # 11A: destructive-tier cards say so, and name the phrase that
+            # unlocks them — a casual "yes" won't be accepted.
+            "strong_required": requires_strong_approval(plan, safety),
             "message": message or plan.confirmation_message or safety.reason
                        or "Do you want me to go ahead?",
         })

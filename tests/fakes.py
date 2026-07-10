@@ -29,7 +29,11 @@ class FakePipelineUI:
         self.states = []
         self.confirmations = []
         self.confirmation_meta = []
+        self.details_shown = []           # 11A: "show details" payloads
         self.hidden = 0
+
+    def show_confirmation_details(self, payload):
+        self.details_shown.append(payload)
 
     def show_user(self, text): self.users.append(text)
     def show_anna(self, text): self.annas.append(text)

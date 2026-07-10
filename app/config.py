@@ -184,6 +184,17 @@ class AppConfig(BaseModel):
     # Safety / behavior
     confirmation_mode: str = "strict"    # "strict" | "normal"
     max_type_text_no_confirm: int = 500
+    # Voice approval (11A). A pending confirmation auto-cancels after this
+    # many seconds. Destructive-tier actions additionally demand the strong
+    # phrase ("Anna approve"); a casual "yes" is refused.
+    confirmation_timeout_s: float = 30.0
+    # Reopen the mic automatically while a confirmation card is up, so
+    # "approve"/"cancel" can be spoken without pressing push-to-talk. Only
+    # applies in continuous hands-free mode. OFF by default: it opens the
+    # microphone on its own, and 9C deliberately never grabs the mic while
+    # waiting for approval. Push-to-talk and the voice-confirm button always
+    # accept spoken approval regardless of this setting.
+    confirmation_voice_listen: bool = False
 
     # UI
     animation_quality: str = "medium"    # "low" | "medium" | "high"

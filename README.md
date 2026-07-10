@@ -183,8 +183,34 @@ python app\main.py --doctor   # health check
   talking (silence ends the recording). Press again while she's speaking to
   cut her off (barge-in).
 - **Type:** the input box at the bottom right. Enter sends.
-- **Approvals:** terminal/window commands show an amber card — Run it or
-  Cancel (auto-cancels in 30 s).
+- **Approvals (voice or click):** risky commands show an amber card — click
+  *Run it* / *Cancel*, or just say it. Whichever comes first wins.
+
+  | Say | Effect |
+  |---|---|
+  | `approve` · `yes` · `do it` · `go ahead` · `run it` | approve an ordinary confirmation |
+  | **`anna approve`** · `i approve` · `confirm action` | **required** for destructive-tier actions (see below) |
+  | `cancel` · `no` · `stop` · `not now` · `leave it` | cancel (a casual word is always enough to stop) |
+  | `what are you asking?` | Anna repeats the confirmation aloud |
+  | `show details` | expands the card with the exact tool + arguments |
+
+  **Destructive tier needs the strong phrase.** Terminal commands, deletes,
+  moves/renames and (from 11C) sends/submits are refused a plain "yes" — the
+  card turns red and Anna asks for **"Anna approve"**. This is decided from
+  the *safety validator's* result plus a hardcoded tool list, so a plan that
+  under-states its own risk cannot dodge it.
+
+  Anything Anna doesn't recognise as approve/cancel is **never** treated as
+  approval — she asks once more and the action stays parked. A stray "yes"
+  with nothing pending does nothing and is routed as normal speech.
+  Confirmations auto-cancel after `confirmation_timeout_s` (default 30 s),
+  and only one can be pending at a time — a second risky action is deferred,
+  never silently swapped in.
+
+  By default Anna does **not** open the mic on her own to hear your approval:
+  press push-to-talk (or the card's voice button) and speak. If you want the
+  mic to reopen automatically while a card is up during continuous
+  hands-free conversation, set `confirmation_voice_listen: true`.
 - **Wake word** (optional): flip the toggle and just say **"Hey Anna"** (or
   "Anastasia"). This uses the local Whisper STT to listen for her name — no
   training, no extra install. Say the full "Hey Anna"; a bare "Anna" is too
@@ -213,6 +239,9 @@ python app\main.py --doctor   # health check
 | Magenta mic ring / "streaming" badge | Normal in streaming mode — it means live mic audio is going to Deepgram. Switch Speech recognition to *local* to keep audio on-device |
 | Streaming stopped working | Deepgram failed 3× → the STT circuit routes to local Whisper for 120s, then auto-probes. Anna keeps working on local Whisper meanwhile |
 | Mic stays on between replies | Continuous Conversation mode is on. Say "stop listening", tap the mic, or toggle Conversation off |
+| Saying "yes" doesn't approve a command | Destructive-tier actions (terminal, delete, move/rename) need the strong phrase **"Anna approve"** — the card is red and says so. Casual words always work for *cancel* |
+| Anna doesn't hear my spoken "approve" | She doesn't open the mic by herself while a card is up. Press Ctrl+Alt+Space and say it, click the card, or set `confirmation_voice_listen: true` to auto-listen in hands-free mode |
+| "I'm still waiting on your approval for the last one" | Only one confirmation can be pending. Answer or cancel it (or wait 30 s for it to expire) and the new one will be offered |
 | "Engine: Pipeline (Live offline)" chip | Gemini Live is selected but unreachable (no key / no consent / offline / circuit open after 3 failures). Anna keeps working on the pipeline; Live auto-probes after 120s |
 | Purple mic ring / "Live — audio streaming to Google" badge | Normal in Live mode — continuous mic audio is going to Google and the session is metered. Tap the mic to end it; idle sessions auto-close |
 | Live session ends by itself mid-conversation | Either the ~15-min session cap hit without a resumption handle (rare; it normally resumes invisibly), the 20s stall watchdog fired, or the 60s idle auto-close — all fall back cleanly. See Developer Tools for which |
