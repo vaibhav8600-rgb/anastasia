@@ -244,6 +244,10 @@ def validate_action(plan, config) -> SafetyResult:
     elif tool == "window_control":
         app = str(args.get("app") or args.get("app_name")
                   or args.get("target") or "").lower().strip()
+        # "the browser" resolves to a concrete, approved browser (chrome/edge)
+        # the same way the tool will — so "close the browser" isn't blocked.
+        from app.tools.window_control import normalize_window_app
+        app = normalize_window_app(app, config)
         if app and app not in {key.lower() for key in config.app_aliases}:
             return blocked(f"Window target '{app}' is not an approved app alias.")
         requires = True

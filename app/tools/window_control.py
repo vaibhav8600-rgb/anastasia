@@ -22,6 +22,39 @@ _TITLE_HINTS = {
 }
 
 
+# Generic words for "a browser" -> the browser that's actually open.
+_BROWSER_WORDS = {"browser", "the browser", "web browser", "my browser",
+                  "internet", "internet browser"}
+_KNOWN_BROWSERS = ("chrome", "edge", "firefox", "brave", "opera")
+
+
+def normalize_window_app(app: str, config) -> str:
+    """Resolve a generic 'browser' to a concrete, approved browser: the
+    configured default, else whichever known browser has an open window, else
+    the first browser alias that exists. Non-browser names pass through
+    unchanged (so 'python' etc. still hit the own-window / alias guards)."""
+    app = (app or "").lower().strip()
+    if app not in _BROWSER_WORDS:
+        return app
+    default = (getattr(config, "default_browser", "") or "").lower().strip()
+    if default:
+        return default
+    aliases = {key.lower() for key in getattr(config, "app_aliases", {})}
+    try:
+        import pygetwindow
+        titles = " ".join(str(getattr(w, "title", "") or "").lower()
+                          for w in pygetwindow.getAllWindows())
+        for browser in _KNOWN_BROWSERS:
+            if browser in titles and browser in aliases:
+                return browser
+    except Exception:
+        pass
+    for browser in _KNOWN_BROWSERS:
+        if browser in aliases:
+            return browser
+    return app          # no browser configured -> let the alias guard refuse it
+
+
 def _active_title() -> str:
     try:
         import pygetwindow
@@ -63,6 +96,7 @@ def window_control(args: dict, ctx: ToolContext) -> ToolResult:
     if action not in _ACTIONS:
         return ToolResult(False, f"I can close, minimize or maximize — not '{action}'.")
     app = str(args.get("app") or args.get("app_name") or args.get("target") or "").lower().strip()
+    app = normalize_window_app(app, ctx.config)   # 'the browser' -> chrome/edge
 
     # A bare "close" with no named app would Alt+F4 whatever is focused — which
     # is usually Anna herself or the terminal. Require an explicit target for

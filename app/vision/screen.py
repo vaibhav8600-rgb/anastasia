@@ -63,6 +63,43 @@ def _cursor_bbox():
         return None
 
 
+def _rect_contains(rect, point) -> bool:
+    left, top, right, bottom = rect
+    x, y = point
+    return left <= x < right and top <= y < bottom
+
+
+def active_monitor_rect():
+    """The single monitor the user is actually looking at — the one holding
+    the focused window (or, failing that, the mouse). Returns None for a
+    single-monitor setup so the caller grabs the whole (only) screen.
+
+    Grabbing the WHOLE virtual desktop for "what's on my screen" was the real
+    limitation: two 2560x1440 monitors = 5120x1440, and squashing that into
+    the pixel budget left ~1192x671 per monitor — legible to cloud vision but
+    far too small for local OCR (157 chars off a full desktop).
+    """
+    from app.tools.screenshot import _monitor_rects
+    monitors = _monitor_rects()
+    if len(monitors) <= 1:
+        return None
+    win = active_window_bbox()
+    if win is not None:
+        cx, cy = (win[0] + win[2]) // 2, (win[1] + win[3]) // 2
+        for rect in monitors:
+            if _rect_contains(rect, (cx, cy)):
+                return rect
+    try:
+        import pyautogui
+        pos = pyautogui.position()
+        for rect in monitors:
+            if _rect_contains(rect, (pos.x, pos.y)):
+                return rect
+    except Exception:
+        pass
+    return monitors[0]      # leftmost as a sane default
+
+
 def capture(config, scope: str = "full", region=None, screen: int = 0) -> VisionFrame:
     """Grab exactly one frame. Raises VisionUnavailable rather than guessing
     if the requested scope can't be resolved."""
@@ -95,6 +132,13 @@ def capture(config, scope: str = "full", region=None, screen: int = 0) -> Vision
         else:
             raise VisionUnavailable(
                 f"You asked for screen {screen} but I only see {len(monitors)}.")
+    elif scope == "full":
+        # "What's on my screen" means the monitor you're using, not both
+        # monitors squashed together (that wrecks OCR). None -> single screen.
+        active = active_monitor_rect()
+        if active is not None:
+            bbox = active
+            scope = "monitor"
 
     image = ImageGrab.grab(bbox=bbox, all_screens=True) if bbox is not None \
         else ImageGrab.grab(all_screens=True)

@@ -34,6 +34,18 @@ SCREEN_CONTENT_TOOLS = {"look_at_screen", "screen_capture",
 CLIPBOARD_CONTENT_TOOLS = {"clipboard_read", "summarize_clipboard"}
 INFORMATIONAL_TOOLS = SCREEN_CONTENT_TOOLS | CLIPBOARD_CONTENT_TOOLS
 
+# Tools that all mean "grab a still of the screen right now". If Anna already
+# did one locally this turn, the model asking for a DIFFERENT one of these
+# (it heard the same audio and often adds take_screenshot on its own) is
+# redundant — dedup across the whole family, not just the exact tool name.
+SCREEN_SNAPSHOT_FAMILY = {"take_screenshot"} | (SCREEN_CONTENT_TOOLS - {"camera_look"})
+
+
+def _tool_family(name: str) -> str:
+    if name in SCREEN_SNAPSHOT_FAMILY:
+        return "screen_snapshot"
+    return name
+
 
 class LiveEngine:
     def __init__(self, config, agent, history, pipeline, selector, *,
@@ -318,10 +330,15 @@ class LiveEngine:
                         f"({' '.join(str(e).split())[:100]})")
 
     def _skip_check(self, name: str, args: dict):
-        """Bridge hook: dedup a model tool call that repeats the local rule."""
+        """Bridge hook: dedup a model tool call that repeats what the local
+        rule router already did this turn — by family, so the model's habitual
+        extra take_screenshot after a look_at_screen is skipped too."""
         recent = self._recent_local
-        if recent and recent[0] == name \
-                and time.monotonic() - recent[1] < RULE_DEDUP_WINDOW_S:
+        if recent and time.monotonic() - recent[1] < RULE_DEDUP_WINDOW_S \
+                and _tool_family(recent[0]) == _tool_family(name):
+            if _tool_family(name) == "screen_snapshot":
+                return ("Anna just captured the screen a moment ago — use that, "
+                        "don't grab it again. Just tell the user what's there.")
             return ("Anna already did this locally an instant ago — done. "
                     "Don't repeat it; just confirm to the user.")
         return None
