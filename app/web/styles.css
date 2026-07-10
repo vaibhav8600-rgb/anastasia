@@ -451,6 +451,13 @@ body.stt-streaming #mic-btn.recording::before {
 .confirm-card .confirm-details td { padding: 1px 8px 1px 0; vertical-align: top; }
 .confirm-card.strong { border-color: rgba(248, 113, 113, .55); }
 .confirm-card.strong h4 { color: var(--error); }
+/* 11C: exactly what will be clicked, plus a crop when it was only guessed */
+.confirm-card .confirm-target { font-size: 12px; margin: 6px 0 8px; }
+.confirm-card .confirm-guess { color: var(--warn); margin-top: 4px; }
+.confirm-card .confirm-crop {
+  display: block; margin-top: 6px; max-width: 100%; border-radius: 6px;
+  border: 2px solid var(--warn);
+}
 
 /* ============================ bottom bar ============================ */
 #bottombar {

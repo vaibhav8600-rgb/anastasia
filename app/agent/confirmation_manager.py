@@ -318,12 +318,20 @@ class ConfirmationManager:
         pending = self.pending
         if pending is None:
             return None
+        # Internal keys (11C's "_resolved", which carries a base64 crop) are
+        # kept out of the argument blob; they surface as `details` instead.
+        arguments = {k: v for k, v in (pending.plan.arguments or {}).items()
+                     if not str(k).startswith("_")}
+        details = dict(pending.details or {})
+        resolved = (pending.plan.arguments or {}).get("_resolved")
+        if isinstance(resolved, dict):
+            details.setdefault("target", resolved)
         return {"id": pending.id, "transcript": pending.transcript,
                 "tool": pending.plan.tool_name,
-                "arguments": pending.plan.arguments,
+                "arguments": arguments,
                 "risk": pending.safety.risk_level,
                 "kind": pending.kind,
                 "strong_required": pending.strong_required,
-                "details": pending.details,
+                "details": details,
                 "message": pending.message or pending.plan.confirmation_message
                            or pending.safety.reason}

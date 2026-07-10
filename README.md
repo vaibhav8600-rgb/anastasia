@@ -247,6 +247,32 @@ python app\main.py --doctor   # health check
   number" or "CVV", she stops and asks. Overriding that ("look at my screen
   anyway") is a **high-risk action**, so it needs the strong approval phrase.
 
+- **Controlling other apps — Anna clicks real controls, not pixels.** Two
+  backends, each for what it's good at:
+  - **Native Windows apps** (Notepad, File Explorer, Mail/Outlook, Teams…) via
+    **UIA**: she finds the actual button/menu/field by its accessible name and
+    type, with a real bounding box. `uiautomation` is the dependency.
+  - **Web pages** (Gmail, WhatsApp Web, any site) via **Playwright** over the
+    DevTools Protocol: she reads the real DOM and clicks by role/text/selector.
+    She **attaches to your already-open, logged-in browser** — start it once
+    with a debug port so she can: `chrome.exe --remote-debugging-port=9222`
+    (she never opens a separate, logged-out profile, and you don't need
+    `playwright install`).
+  - **Vision-guessed coordinates are the last resort only** — used when neither
+    backend can find the control (custom-drawn UI, some Electron apps with a
+    sparse accessibility tree). Any vision guess is flagged *low confidence* and
+    **always** asks first, showing a cropped screenshot of exactly what it would
+    click.
+
+  **The destructive-target guard lives in the safety validator, not the
+  planner.** Any resolved control whose name contains **Send, Submit, Pay,
+  Delete, Confirm, Install, Post, Purchase, Transfer, Approve** forces a
+  confirmation at high risk — *regardless of what the plan or a cloud model
+  claimed the risk was*. A misfiring planner literally cannot click "Send"
+  without asking, and clicking one of these needs the strong **"Anna approve"**
+  phrase. **Password fields** (detected via UIA's `IsPassword`) are never typed
+  into unasked and never read aloud or logged.
+
 - Full command list: [SKILL.md](SKILL.md).
 
 ## Troubleshooting
@@ -278,6 +304,11 @@ python app\main.py --doctor   # health check
 | "the camera didn't respond" | The app window needs camera permission in Windows (Settings → Privacy → Camera → allow desktop apps) |
 | Anna refuses to look at a screen | She spotted something that looks like a password, API key or banking detail and won't analyze it. Say "look at my screen anyway" and approve with the strong phrase |
 | Cloud vision says a model is unavailable | Preview models churn. Anna retries a fallback model automatically and, failing that, degrades to local OCR. Set a different `vision_cloud_model` in Settings → Vision |
+| "I can't reach your browser on localhost:9222" | Playwright attaches to your real browser over CDP. Start it once with a debug port: close Chrome, then `chrome.exe --remote-debugging-port=9222`. Native-app control (UIA) needs nothing extra |
+| Anna clicked the wrong thing / says "only 72% sure" | She couldn't find the control through UIA or the browser DOM and fell back to guessing from pixels. That always asks first and shows a crop — check it before approving. Better accessibility (native apps, real web pages) avoids the guess entirely |
+| "that's a destructive control — needs your OK" on a normal button | The button's name contains Send/Submit/Pay/Delete/Confirm/Install/Post/Purchase/Transfer/Approve. That's deliberate and enforced in the validator. Edit `destructive_targets` in config if a specific app misuses one of these words |
+| Electron app controls aren't found | Some Electron apps expose a sparse accessibility tree to UIA. Anna falls back to the vision guess (which asks first). Where the app has a web version, the browser backend works better |
+| `pip` fails with "Fatal error in launcher" | This venv's `pip.exe` has a stale baked-in path. Use `python -m pip install ...` instead |
 | "Engine: Pipeline (Live offline)" chip | Gemini Live is selected but unreachable (no key / no consent / offline / circuit open after 3 failures). Anna keeps working on the pipeline; Live auto-probes after 120s |
 | Purple mic ring / "Live — audio streaming to Google" badge | Normal in Live mode — continuous mic audio is going to Google and the session is metered. Tap the mic to end it; idle sessions auto-close |
 | Live session ends by itself mid-conversation | Either the ~15-min session cap hit without a resumption handle (rare; it normally resumes invisibly), the 20s stall watchdog fired, or the 60s idle auto-close — all fall back cleanly. See Developer Tools for which |

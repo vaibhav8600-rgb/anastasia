@@ -24,6 +24,12 @@ class SafetyResult(BaseModel):
     requires_confirmation: bool
     risk_level: str  # low | medium | high | blocked
     reason: str = ""
+    # 11C: set when the resolved click target's name is on the destructive
+    # list, or when the target was only a vision guess. Both make 11A demand
+    # the strong approval phrase.
+    destructive_target: bool = False
+    confidence: float = 1.0
+    target: dict = None
 
 
 # Tools that may run without confirmation (unless rules below escalate them).
@@ -37,12 +43,94 @@ SAFE_TOOLS = {
     "look_at_screen", "screen_capture", "active_window_capture",
     "region_capture", "camera_look",
     "start_screen_watch", "stop_screen_watch", "privacy_mode",
+    # App control (11C). Read-only lookups are safe; clicking and typing are
+    # gated below by the resolved target, not by the caller's say-so.
+    "find_control", "read_window_text", "browser_read_page_text",
+    "browser_get_visible_links", "browser_navigate",
+    "click_control", "type_into_control",
+    "browser_find_and_click", "browser_type_into",
 }
 
 # Vision tools that will analyze a frame — overriding the sensitive-content
 # refusal on these is what needs the user's explicit OK.
 VISION_LOOK_TOOLS = {"look_at_screen", "screen_capture",
                      "active_window_capture", "region_capture", "camera_look"}
+
+# ---- 11C: app control -----------------------------------------------------
+CLICK_TOOLS = {"click_control", "browser_find_and_click"}
+TYPE_TOOLS = {"type_into_control", "browser_type_into"}
+CONTROL_TOOLS = CLICK_TOOLS | TYPE_TOOLS
+
+# HARDCODED here, in the validator — not in the planner. Any resolved target
+# whose accessible name contains one of these forces a confirmation at high
+# risk, no matter what the plan (or a cloud model's tool call) claimed. A
+# misfiring planner therefore cannot click "Send" without asking.
+DESTRUCTIVE_TARGETS = ("send", "submit", "pay", "delete", "confirm", "install",
+                       "post", "purchase", "transfer", "approve")
+
+
+def destructive_targets(config) -> tuple:
+    """The list is configurable, but never empty-able below the hardcoded set
+    unless the user deliberately replaces it in config."""
+    configured = getattr(config, "destructive_targets", None)
+    if isinstance(configured, (list, tuple)) and configured:
+        return tuple(str(word).lower() for word in configured)
+    return DESTRUCTIVE_TARGETS
+
+
+def is_destructive_target(text: str, config=None) -> bool:
+    """Whole-word, case-insensitive: "Send" and "Send message" match,
+    "Sender" and "Resend" do not."""
+    if not text:
+        return False
+    words = destructive_targets(config) if config is not None else DESTRUCTIVE_TARGETS
+    lowered = str(text).lower()
+    return any(re.search(rf"\b{re.escape(word)}\b", lowered) for word in words)
+
+
+# Anna's own resolver stamps the target. Injectable for tests; a model can
+# never supply one (see _resolve_target, which strips model-supplied values).
+_TARGET_RESOLVER = None
+_DEFAULT_RESOLVER = None
+
+
+def set_target_resolver(resolver) -> None:
+    """resolver(plan, config) -> ResolvedTarget | None"""
+    global _TARGET_RESOLVER
+    _TARGET_RESOLVER = resolver
+
+
+def _default_resolve(plan, config):
+    global _DEFAULT_RESOLVER
+    from app.control.resolver import TargetResolver
+    if _DEFAULT_RESOLVER is None:
+        _DEFAULT_RESOLVER = TargetResolver(config)
+    args = plan.arguments or {}
+    hint = str(args.get("hint") or args.get("target") or args.get("text")
+               or args.get("field") or "")
+    scope = _DEFAULT_RESOLVER.current_scope(app=str(args.get("app") or ""))
+    return _DEFAULT_RESOLVER.resolve(hint, scope)
+
+
+def _resolve_target(plan, config):
+    """Resolve the control FRESH, inside the validator.
+
+    Any `_resolved` already on the plan is discarded first: it could only have
+    come from an LLM tool call, and trusting it would let a model click "Send"
+    while claiming it had resolved a harmless "Save" button.
+    """
+    args = plan.arguments if isinstance(plan.arguments, dict) else {}
+    args.pop("_resolved", None)
+    resolver = _TARGET_RESOLVER or _default_resolve
+    try:
+        target = resolver(plan, config)
+    except Exception:
+        return None
+    if target is None:
+        return None
+    resolved = target.to_public() if hasattr(target, "to_public") else dict(target)
+    args["_resolved"] = resolved      # the executor clicks exactly THIS
+    return resolved
 
 # Tools that always require explicit user confirmation.
 CONFIRM_TOOLS = {"run_terminal", "window_control", "delete_files"}
@@ -161,6 +249,47 @@ def validate_action(plan, config) -> SafetyResult:
         requires = True
         risk = _escalate(risk, "medium")
         reason = "Window control affects your active window."
+
+    elif tool in CONTROL_TOOLS:
+        # 11C.4 — the hardcoded destructive-target check. This runs AFTER a
+        # fresh resolution and BEFORE anything is clicked, inside the
+        # validator, so no plan and no cloud model can route around it.
+        resolved = _resolve_target(plan, config)
+        if resolved is None:
+            return blocked("I couldn't find that control on screen, so I "
+                           "won't guess and click something else.")
+
+        name = str(resolved.get("name") or "")
+        confidence = float(resolved.get("confidence", 1.0))
+        hint = str(args.get("hint") or args.get("target") or "")
+
+        result_extra = {"target": resolved, "confidence": confidence}
+        if is_destructive_target(name, config) or is_destructive_target(hint, config):
+            requires = True
+            risk = _escalate(risk, "high")
+            result_extra["destructive_target"] = True
+            reason = (f"“{name or hint}” is a destructive control — that "
+                      "always needs your explicit OK.")
+        if confidence < 1.0:
+            # A vision guess. Never clicked without a human seeing the crop.
+            requires = True
+            risk = _escalate(risk, "high")
+            result_extra["destructive_target"] = True
+            reason = (f"I couldn't find that control properly and had to go by "
+                      f"what I can see ({confidence:.0%} sure). Check the "
+                      f"picture before I click.")
+        if tool in TYPE_TOOLS and resolved.get("is_password"):
+            requires = True
+            risk = _escalate(risk, "high")
+            result_extra["destructive_target"] = True
+            reason = "That's a password field — I won't type into it unasked."
+
+        if risk == "blocked":
+            return blocked(plan.confirmation_message or "Blocked.")
+        if config.confirmation_mode == "strict" and risk in ("medium", "high"):
+            requires = True
+        return SafetyResult(allowed=True, requires_confirmation=requires,
+                            risk_level=risk, reason=reason, **result_extra)
 
     elif tool in VISION_LOOK_TOOLS:
         # 11B.4: looking at a screen Anna flagged as sensitive (passwords,

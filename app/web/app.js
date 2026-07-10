@@ -210,9 +210,22 @@ function confirmCardHtml(p) {
   const phrase = p.strong_required
     ? `Say <b>“Anna approve”</b> or <b>“cancel”</b> — a plain “yes” won't do for this one.`
     : `You can also say <b>“approve”</b> or <b>“cancel”</b>.`;
+  // 11C: name exactly what will be clicked, and show a picture of it when the
+  // target was only guessed from pixels.
+  const t = p.target;
+  const targetHtml = !t ? "" : `
+    <div class="confirm-target">
+      <b>${esc(t.control_type || "control")} “${esc(t.name || "?")}”</b>
+      <span class="dim">· ${esc(t.window_title || t.app || "foreground")}
+      · via ${esc(t.backend)} · ${Math.round((t.confidence ?? 1) * 100)}% sure</span>
+      ${t.confidence < 1 ? `<div class="confirm-guess">⚠ I had to guess this
+         from what I can see. Check the picture below.</div>` : ""}
+      ${t.crop_data_url ? `<img class="confirm-crop" src="${t.crop_data_url}" alt="target">` : ""}
+    </div>`;
   return `<div class="confirm-card${p.strong_required ? " strong" : ""}" data-confirm-id="${esc(p.id)}">
             <h4>⚠ Approval required <span class="dim">· risk: ${esc(p.risk || "?")}</span></h4>
             <code>${esc(p.tool)} ${esc(args)}</code>
+            ${targetHtml}
             <div class="confirm-msg">${esc(p.message || "Do you want me to go ahead?")}</div>
             <div class="confirm-hint">${phrase}</div>
             <div class="confirm-details hidden"></div>

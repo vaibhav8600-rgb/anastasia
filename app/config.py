@@ -235,6 +235,19 @@ class AppConfig(BaseModel):
     # correctly. Preview tier — expect churn; editable in Settings.
     vision_cloud_model: str = "gemini-3-flash-preview"
 
+    # App control (11C). Structured backends first; vision coordinates are a
+    # last resort and are always confirmation-gated.
+    # Attach to YOUR running browser so Anna acts on the real logged-in tab:
+    #   chrome.exe --remote-debugging-port=9222
+    browser_cdp_url: str = "http://localhost:9222"
+    # Resolved click targets whose accessible name matches any of these ALWAYS
+    # require confirmation, whatever risk the plan claimed. Enforced in the
+    # safety validator, so a misfiring planner cannot bypass it.
+    destructive_targets: List[str] = Field(
+        default_factory=lambda: ["send", "submit", "pay", "delete", "confirm",
+                                 "install", "post", "purchase", "transfer",
+                                 "approve"])
+
     # Tools
     default_browser: str = ""            # empty = system default; or alias key e.g. "chrome"
     screenshot_dir: str = str(Path.home() / "Pictures" / "AnnaScreenshots").replace("\\", "/")
