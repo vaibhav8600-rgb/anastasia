@@ -48,9 +48,16 @@ class VisionService:
         return screen_mod.capture(self.config, scope=scope, region=region,
                                   screen=screen)
 
-    def _default_ocr(self, frame) -> str:
+    def _default_ocr(self, frame, fast: bool = False) -> str:
         from app.vision import ocr
-        return ocr.extract_text(frame, self.config)
+        return ocr.extract_text(frame, self.config, fast=fast)
+
+    def _ocr_text(self, frame, fast: bool = False) -> str:
+        """Call the (possibly injected) OCR, tolerating a 1-arg test double."""
+        try:
+            return self._ocr(frame, fast=fast) or ""
+        except TypeError:
+            return self._ocr(frame) or ""
 
     def _default_cloud(self, frame, question: str) -> str:
         from app.vision import cloud
@@ -89,8 +96,12 @@ class VisionService:
         import time
         self.last_capture_at = time.time()
         try:
-            text = self._ocr(frame) or ""
-            sensitive, reason = looks_sensitive(text)
+            want_cloud = allow_cloud and self.cloud_enabled()
+            # A FAST, downscaled OCR pass drives the privacy gate. Full OCR of
+            # a dense desktop is 15-20s, so we never make the user wait for it
+            # when cloud will describe the screen anyway.
+            scan_text = self._ocr_text(frame, fast=True)
+            sensitive, reason = looks_sensitive(scan_text)
             if sensitive and not allow_sensitive:
                 # Refuse to analyze AT ALL — not locally, not in the cloud.
                 devlog.warn("Vision: sensitive content detected — not analyzed.")
@@ -100,14 +111,17 @@ class VisionService:
 
             used_cloud = False
             summary = ""
-            if allow_cloud and self.cloud_enabled():
+            text = scan_text
+            if want_cloud:
                 try:
                     summary = self._cloud(frame, question)
                     used_cloud = bool(summary)
                 except Exception as e:
-                    devlog.warn(f"Vision: cloud description failed, staying "
-                                f"local ({' '.join(str(e).split())[:120]})")
+                    devlog.warn(f"Vision: cloud description failed, falling "
+                                f"back to local ({' '.join(str(e).split())[:100]})")
             if not summary:
+                # Local-only (or cloud failed): now pay for the full OCR.
+                text = self._ocr_text(frame) or scan_text
                 summary = self._local_summary(frame, text)
 
             saved_path = self._save(frame) if (save or getattr(
@@ -180,8 +194,8 @@ class VisionService:
 
     def _watch_tick(self, frame: VisionFrame) -> None:
         """Each frame is processed independently and then dropped by the
-        watcher. We only keep the text length — never the pixels."""
-        text = self._ocr(frame) or ""
+        watcher. Fast OCR so a slow full pass can't stack up between ticks."""
+        text = self._ocr_text(frame, fast=True)
         if text:
             devlog.log(f"Vision: watch tick — {len(text)} chars of text on "
                        f"{frame.window_title or 'screen'}")

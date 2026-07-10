@@ -227,6 +227,13 @@ class AppConfig(BaseModel):
     vision_save_captures: bool = False       # raw frames are never kept unless on
     ocr_backend: str = "auto"                # auto | tesseract | off
     tesseract_exe: str = ""                  # path to tesseract.exe if not on PATH
+    # OCR of a dense desktop is intrinsically slow (~15-20s at full res), so
+    # Anna downscales HARD before running and caps the time. The fast pass
+    # drives the sensitive-content scan; the full pass is used only in
+    # local-only mode (cloud vision describes a screen faster and better).
+    ocr_fast_pixels: int = 500_000
+    ocr_max_pixels: int = 1_100_000
+    ocr_timeout_s: int = 8
     # Cloud vision (separate, explicit consent — screen/camera frames may be
     # sent to Gemini). Off by default; local OCR needs no consent.
     cloud_vision_consent: bool = False

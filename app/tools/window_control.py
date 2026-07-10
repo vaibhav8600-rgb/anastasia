@@ -29,11 +29,16 @@ _KNOWN_BROWSERS = ("chrome", "edge", "firefox", "brave", "opera")
 
 
 def normalize_window_app(app: str, config) -> str:
-    """Resolve a generic 'browser' to a concrete, approved browser: the
-    configured default, else whichever known browser has an open window, else
-    the first browser alias that exists. Non-browser names pass through
-    unchanged (so 'python' etc. still hit the own-window / alias guards)."""
+    """Resolve a generic 'browser' to a concrete, approved browser, and map
+    common spoken/model synonyms ('code' -> vscode) to their alias key.
+    Non-alias names pass through unchanged so 'python'/'anastasia' still hit
+    the own-window / alias guards."""
     app = (app or "").lower().strip()
+    # Synonym map (same source the router uses): 'code' -> 'vscode', etc.
+    from app.agent.router import APP_SYNONYMS, _norm
+    canon = APP_SYNONYMS.get(_norm(app))
+    if canon and canon in {key.lower() for key in getattr(config, "app_aliases", {})}:
+        return canon
     if app not in _BROWSER_WORDS:
         return app
     default = (getattr(config, "default_browser", "") or "").lower().strip()
