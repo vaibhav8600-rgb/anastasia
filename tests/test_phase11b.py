@@ -341,6 +341,82 @@ def test_saving_a_capture_is_opt_in(tmp_path):
     assert service.look(save=True).saved_path == "C:/x.png"
 
 
+def test_screen_words_never_route_to_the_camera():
+    """From real logs: "What do you see on the screen one?" opened the WEBCAM.
+    Naming the screen must always beat the bare camera phrase."""
+    config = make_config()
+    for phrase in ("what do you see on the screen one",
+                   "what do you see on screen one",
+                   "what do you see on my screen",
+                   "what do you see in this window"):
+        plan = match_rule(phrase, config)
+        assert plan is not None, phrase
+        assert plan.tool_name != "camera_look", f"{phrase!r} opened the camera"
+
+    assert match_rule("what do you see on screen two", config).arguments["screen"] == 2
+    # ...while genuine camera requests still reach the camera.
+    for phrase in ("what do you see", "look through the camera",
+                   "what do you see through the webcam"):
+        assert match_rule(phrase, config).tool_name == "camera_look", phrase
+
+
+def test_blank_camera_frame_is_rejected_not_described():
+    """From real logs: two saved 1280x720 camera frames were PURE BLACK
+    (mean=0, one unique value). A cold sensor must fail honestly."""
+    from PIL import Image
+    from app.vision.camera import is_blank
+
+    assert is_blank(Image.new("RGB", (64, 48), "black"))
+    assert is_blank(Image.new("RGB", (64, 48), "white"))
+    real = Image.new("RGB", (64, 48), "black")
+    real.putpixel((10, 10), (200, 30, 30))
+    assert not is_blank(real)
+
+    class BlackStream:
+        def __init__(self, log):
+            self.log = log
+        def read(self):
+            return Image.new("RGB", (1280, 720), "black")
+        def stop(self):
+            self.log["stops"] += 1
+
+    log = {"stops": 0}
+    session = CameraSession(make_config(), opener=lambda: BlackStream(log))
+    with pytest.raises(CameraUnavailable) as excinfo:
+        session.capture_once()
+    assert "blank" in str(excinfo.value).lower()
+    assert log["stops"] == 1              # the camera still gets turned off
+    assert not session.active
+
+
+def test_ocr_finds_tesseract_when_winget_left_it_off_path(monkeypatch, tmp_path):
+    """winget installs Tesseract to Program Files but does NOT add it to PATH,
+    so shutil.which() missed a perfectly good install."""
+    from app.vision import ocr
+
+    exe = tmp_path / "tesseract.exe"
+    exe.write_text("")
+    monkeypatch.setattr(ocr.shutil, "which", lambda name: None)
+    monkeypatch.setattr(ocr, "_KNOWN_PATHS", (str(exe),))
+    assert ocr._tesseract_exe(make_config()) == str(exe)
+    # an explicitly configured path still wins, and a bogus one is ignored
+    assert ocr._tesseract_exe(make_config(tesseract_exe=str(exe))) == str(exe)
+    assert ocr._tesseract_exe(make_config(tesseract_exe="C:/nope.exe")) == str(exe)
+
+
+def test_full_screen_summary_is_not_labelled_with_the_focused_window():
+    """It read "On Anastasia (Anna) I can read…" while grabbing the whole
+    desktop — the focused window title is not what we looked at."""
+    service, _calls = make_service(ocr_text="build failed")
+    frame = make_frame(scope="full", title="Anastasia (Anna)")
+    summary = service._local_summary(frame, "build failed")
+    assert "Anastasia (Anna)" not in summary
+    assert "your screen" in summary
+    # a window-scoped grab still names the window
+    window = make_frame(scope="window", title="Visual Studio Code")
+    assert "Visual Studio Code" in service._local_summary(window, "build failed")
+
+
 def test_cloud_vision_falls_back_across_models_but_never_past_consent(monkeypatch):
     """Preview models 404/503 without warning, so one retry on another model
     turns an outage into a blip. The consent gate is checked BEFORE any of it."""

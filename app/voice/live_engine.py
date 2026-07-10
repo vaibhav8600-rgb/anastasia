@@ -26,6 +26,14 @@ from app.agent.safety import validate_action
 
 RULE_DEDUP_WINDOW_S = 15.0   # model tool call repeating a local rule -> skip
 
+# Tools whose VALUE is the content they return, not the act of running them.
+# A bare "done" tells the user nothing, so the result is fed back to the model
+# to voice — subject to the same content gates as everywhere else.
+SCREEN_CONTENT_TOOLS = {"look_at_screen", "screen_capture",
+                        "active_window_capture", "region_capture", "camera_look"}
+CLIPBOARD_CONTENT_TOOLS = {"clipboard_read", "summarize_clipboard"}
+INFORMATIONAL_TOOLS = SCREEN_CONTENT_TOOLS | CLIPBOARD_CONTENT_TOOLS
+
 
 class LiveEngine:
     def __init__(self, config, agent, history, pipeline, selector, *,
@@ -239,6 +247,12 @@ class LiveEngine:
         text = self._user_buf.strip()
         if len(text) < 4:
             return
+        # Only ever act on a COMPLETE sentence. Gemini's input transcription is
+        # punctuated, and matching a prefix would run "what do you see" (camera)
+        # before "...on my screen" had even arrived. If punctuation never comes,
+        # nothing is short-circuited and the model's tool call handles it.
+        if not text.endswith((".", "?", "!")):
+            return
         try:
             plan = self.agent.plan_rule(text)
         except Exception:
@@ -263,6 +277,45 @@ class LiveEngine:
         self.show_result(result.message or "Done.",
                          {"intent": plan.intent, "success": result.success,
                           "data": result.data})
+        self._feed_result_to_model(plan, result)
+
+    def _feed_result_to_model(self, plan, result) -> None:
+        """A local short-circuit leaves the model with nothing to say — it
+        never saw the tool's output. For informational tools, hand the result
+        back so Anna can actually answer.
+
+        The content gates still apply: screen text only reaches Google with
+        cloud-vision consent, clipboard text only with the clipboard opt-in.
+        Without them Anna says what she did, and the detail stays on screen.
+        """
+        if self.session is None or not self.active or not result.success:
+            return
+        tool = plan.tool_name
+        if tool not in INFORMATIONAL_TOOLS:
+            return
+
+        allowed, why = True, ""
+        if tool in SCREEN_CONTENT_TOOLS:
+            from app.llm.providers import vision_cloud_allowed
+            allowed, why = vision_cloud_allowed(self.config)
+        elif tool in CLIPBOARD_CONTENT_TOOLS:
+            from app.llm.providers import DataClass, cloud_allowed
+            allowed, why = cloud_allowed({DataClass.CLIPBOARD}, self.config)
+
+        if allowed:
+            note = (f"(You just ran {tool} on the user's PC. It returned: "
+                    f"{str(result.message)[:1500]}) Tell the user what you "
+                    "found, briefly and naturally.")
+        else:
+            note = (f"(You just ran {tool} locally, but its contents can't be "
+                    f"shared with you: {why}. The details are shown in the "
+                    "user's chat panel.) Tell them you've looked and put it on "
+                    "screen, and that they can enable it in Settings.")
+        try:
+            self.session.send_text(note)
+        except Exception as e:
+            devlog.warn(f"live: couldn't hand the result back "
+                        f"({' '.join(str(e).split())[:100]})")
 
     def _skip_check(self, name: str, args: dict):
         """Bridge hook: dedup a model tool call that repeats the local rule."""

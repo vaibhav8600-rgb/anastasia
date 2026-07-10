@@ -86,6 +86,7 @@ class ScreenWatcher:
                                  daemon=True).start()
                 return
             frame = None
+            started = time.monotonic()
             try:
                 frame = self._capture()          # ONE independent still
                 self.frames_captured += 1
@@ -96,5 +97,8 @@ class ScreenWatcher:
             finally:
                 if frame is not None:
                     frame.release()              # pixels dropped every tick
-            if self._stop.wait(self.interval_s):
+            # Local OCR can take seconds. Sleep only the REMAINDER of the
+            # interval so a slow tick doesn't stack up, and never busy-spin.
+            elapsed = time.monotonic() - started
+            if self._stop.wait(max(0.05, self.interval_s - elapsed)):
                 return

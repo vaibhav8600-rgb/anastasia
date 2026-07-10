@@ -50,6 +50,21 @@ HOTKEY_PHRASES = {
 }
 
 
+_MONITOR_WORDS = {"one": 1, "first": 1, "primary": 1, "main": 1,
+                  "two": 2, "second": 2, "three": 3, "third": 3}
+_MONITOR_NUM = r"(\d+|one|two|three|first|second|third|primary|main)"
+
+
+def _monitor_number(t: str) -> int:
+    """'screen two' / 'monitor 1' / 'second display' -> 2 / 1 / 2. 0 = none."""
+    match = re.search(rf"\b(?:screen|monitor|display)\s*(?:number\s*)?{_MONITOR_NUM}\b", t) \
+        or re.search(rf"\b{_MONITOR_NUM}\s+(?:screen|monitor|display)\b", t)
+    if not match:
+        return 0
+    word = match.group(1)
+    return int(word) if word.isdigit() else _MONITOR_WORDS.get(word, 0)
+
+
 def _norm(s: str) -> str:
     return re.sub(r"[\s.\-_]+", "", s.lower())
 
@@ -135,9 +150,12 @@ def match_rule(raw: str, config, memory=None) -> Optional[ActionPlan]:
     # validator turns that into a confirmation (never a silent bypass).
     anyway = bool(re.search(r"\banyway\b|\bgo ahead and look\b", t))
     extra = {"allow_sensitive": True} if anyway else {}
-    if re.match(r"what do you see\b", t) \
-            or (re.search(r"\bcamera\b", t)
-                and re.search(r"\b(look|see|through|use|open|check|show)\b", t)):
+    # Naming the screen must ALWAYS beat the bare "what do you see" camera
+    # phrase: "what do you see on the screen" opened the webcam otherwise.
+    means_screen = re.search(r"\b(screen|monitor|display|desktop|window|page|tab)\b", t)
+    means_camera = re.search(r"\b(camera|webcam)\b", t)
+    if (means_camera and re.search(r"\b(look|see|through|use|open|check|show)\b", t)) \
+            or (re.match(r"what do you see\b", t) and not means_screen):
         return plan("camera_look", args=dict(extra),
                     msg="Taking a quick look through the camera.")
     if re.search(r"\b(watch|keep an eye on)\b.*\bscreen\b", t) \
@@ -154,9 +172,14 @@ def match_rule(raw: str, config, memory=None) -> Optional[ActionPlan]:
             or re.search(r"\bwhat'?s on (my |the )?screen\b", t) \
             or re.search(r"\bwhat is on (my |the )?screen\b", t) \
             or re.search(r"\bcan you see (my |the )?screen\b", t) \
+            or (re.search(r"\bwhat do you see\b", t) and means_screen) \
             or re.search(r"\bread (this|the) error\b", t) \
             or re.search(r"\bsummari[sz]e (this|the) page\b", t):
-        return plan("look_at_screen", args=dict(extra),
+        args = dict(extra)
+        target = _monitor_number(t)     # "…on screen two" -> just that monitor
+        if target:
+            args["screen"] = target
+        return plan("look_at_screen", args=args,
                     msg="Taking a look at your screen.")
 
     # --- clipboard --------------------------------------------------

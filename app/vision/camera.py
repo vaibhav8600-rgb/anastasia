@@ -32,6 +32,17 @@ def image_from_data_url(data_url: str):
     return Image.open(io.BytesIO(raw)).convert("RGB")
 
 
+def is_blank(image) -> bool:
+    """True for a single-colour frame — a webcam that hasn't warmed up yet
+    hands back pure black, which must never be described or saved as if it
+    were a real photo."""
+    try:
+        low, high = image.convert("L").getextrema()
+    except Exception:
+        return False
+    return low == high
+
+
 class BrowserCameraStream:
     """getUserMedia in the WebView: the JS side opens the camera, draws one
     frame, and stops every track before returning the data URL. `stop()` is
@@ -113,6 +124,12 @@ class CameraSession:
                 if stream is not None:
                     stream.stop()         # immediately, per Mira's pattern
                 self._indicate(False)
+        if is_blank(image):
+            # Sensor wasn't ready (or the lens is covered). Say so — never
+            # pass a black rectangle off as a photo, and never save it.
+            raise CameraUnavailable(
+                "The camera gave me a blank frame — it may still be warming "
+                "up, covered, or in use by another app. Try once more?")
         frame = VisionFrame(image=image, source="camera", scope="camera",
                             width=image.size[0], height=image.size[1])
         devlog.log(f"Vision: captured {frame.describe()} (stream closed)")

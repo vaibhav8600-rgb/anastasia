@@ -128,7 +128,11 @@ class VisionService:
             return ("I took a single photo, but without cloud vision I can only "
                     "read text, not describe a scene. Turn on cloud vision in "
                     "Settings if you'd like me to describe what's in it.")
-        where = frame.window_title or "your screen"
+        # For a whole-desktop grab the focused window title is NOT what we're
+        # looking at (it was reading "On Anastasia (Anna) I can read…" while
+        # capturing the entire desktop).
+        where = frame.window_title if frame.scope == "window" else "your screen"
+        where = where or "your screen"
         if text:
             body = text[:MAX_SUMMARY_TEXT]
             return f"On {where} I can read:\n{body}"
@@ -148,7 +152,13 @@ class VisionService:
             out_dir.mkdir(parents=True, exist_ok=True)
             path = out_dir / f"anna_vision_{datetime.now():%Y%m%d_%H%M%S}.png"
             frame.image.save(str(path), "PNG")
-            devlog.log(f"Vision: capture saved on request -> {path}")
+            # Be explicit about WHY a raw frame is on disk — "on request" read
+            # as if the user had asked for this one capture.
+            why = ("Settings → 'Save every capture' is ON"
+                   if getattr(self.config, "vision_save_captures", False)
+                   else "asked for this capture")
+            devlog.warn(f"Vision: raw {frame.source} frame written to disk "
+                        f"({why}) -> {path}")
             return str(path)
         except Exception as e:
             devlog.warn(f"Vision: save failed ({e})")

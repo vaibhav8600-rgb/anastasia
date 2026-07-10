@@ -125,7 +125,36 @@ function stopCameraTracks() {
   cameraStream = null;
 }
 
-/* Open the camera, grab exactly one frame, stop it. The stream never
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+/* True when the canvas holds a single flat colour — a webcam that hasn't
+   warmed up yet returns pure black, and drawing the very first available
+   frame reliably captures exactly that. Sample a small grid; we only need to
+   know whether *anything* varies. */
+function canvasIsBlank(canvas) {
+  const probe = document.createElement("canvas");
+  probe.width = probe.height = 32;
+  probe.getContext("2d").drawImage(canvas, 0, 0, 32, 32);
+  const px = probe.getContext("2d").getImageData(0, 0, 32, 32).data;
+  let min = 255, max = 0;
+  for (let i = 0; i < px.length; i += 4) {
+    const lum = (px[i] + px[i + 1] + px[i + 2]) / 3;
+    if (lum < min) min = lum;
+    if (lum > max) max = lum;
+  }
+  return max - min < 3;
+}
+
+/* Wait for a frame the compositor has actually decoded, not just "metadata
+   is ready". requestVideoFrameCallback fires on a real presented frame. */
+function nextVideoFrame(video) {
+  if (typeof video.requestVideoFrameCallback === "function") {
+    return new Promise(r => video.requestVideoFrameCallback(() => r()));
+  }
+  return new Promise(r => requestAnimationFrame(() => r()));
+}
+
+/* Open the camera, grab exactly one GOOD frame, stop it. The stream never
    outlives this function — the stop happens before the frame is sent. */
 async function captureCameraFrame(requestId) {
   let dataUrl = "";
@@ -134,12 +163,26 @@ async function captureCameraFrame(requestId) {
     const video = document.createElement("video");
     video.srcObject = cameraStream;
     video.muted = true;
+    video.playsInline = true;
     await video.play();
-    await new Promise(r => (video.readyState >= 2 ? r() : (video.onloadeddata = r)));
+    if (video.readyState < 2) {
+      await new Promise(r => (video.onloadeddata = r));
+    }
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth || 640;
     canvas.height = video.videoHeight || 480;
-    canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+    const ctx = canvas.getContext("2d");
+
+    // Most webcams emit black for the first few hundred ms. Keep pulling
+    // frames until one has actual content, or give up after ~2.5s.
+    const deadline = Date.now() + 2500;
+    do {
+      await nextVideoFrame(video);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      if (!canvasIsBlank(canvas)) break;
+      await sleep(100);
+    } while (Date.now() < deadline);
+
     dataUrl = canvas.toDataURL("image/jpeg", 0.85);
     video.pause();
     video.srcObject = null;
