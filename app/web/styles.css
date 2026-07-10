@@ -317,6 +317,20 @@ body.live-streaming #mic-btn {
   border-color: #a78bfa;
   box-shadow: 0 0 18px rgba(167, 139, 250, .55);
 }
+/* 11B vision: a persistent badge for the whole time anything is captured. */
+#screen-vision-badge {
+  margin-top: 10px; font-size: 12px; font-weight: 600;
+  color: #7dd3fc; letter-spacing: .3px;
+}
+#camera-badge {
+  margin-top: 10px; font-size: 12px; font-weight: 700;
+  color: #fca5a5; letter-spacing: .3px; animation: pulse 1s infinite;
+}
+/* watching: the whole app gets a cyan border — impossible to miss */
+body.screen-vision {
+  box-shadow: inset 0 0 0 2px rgba(125, 211, 252, .55);
+}
+body.camera-on { box-shadow: inset 0 0 0 3px rgba(248, 113, 113, .75); }
 #stt-interim {
   margin-top: 6px; min-height: 20px; max-width: 80%;
   font-size: 15px; color: var(--text-mid); font-style: italic; opacity: .7;

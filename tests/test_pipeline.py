@@ -152,8 +152,11 @@ def test_confirmation_timeout_auto_cancels_and_resets_state():
     pipeline.submit("run git status", source="typed")
     assert pipeline.pending is not None
     assert ui.states[-1] == "waiting_confirmation"
+    # Poll the user-visible outcome, not `pending`: the manager clears pending
+    # FIRST (so a racing second cancel can't double-fire) and only then tells
+    # the user — polling on `pending` races that gap.
     deadline = time.time() + 5.0   # generous margin under full-suite CPU load
-    while pipeline.pending is not None and time.time() < deadline:
+    while CONFIRM_TIMEOUT_MESSAGE not in ui.infos and time.time() < deadline:
         time.sleep(0.01)
     assert pipeline.pending is None
     assert CONFIRM_TIMEOUT_MESSAGE in ui.infos

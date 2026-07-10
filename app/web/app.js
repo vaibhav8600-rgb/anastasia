@@ -116,6 +116,41 @@ function renderEntry(p, role) {
   appendMessage(annaMessageHtml(p), "anna");
 }
 
+/* --------------------------------------------------- camera (11B, Mira) */
+let cameraStream = null;
+
+function stopCameraTracks() {
+  if (!cameraStream) return;
+  cameraStream.getTracks().forEach(t => t.stop());   // camera light goes out
+  cameraStream = null;
+}
+
+/* Open the camera, grab exactly one frame, stop it. The stream never
+   outlives this function — the stop happens before the frame is sent. */
+async function captureCameraFrame(requestId) {
+  let dataUrl = "";
+  try {
+    cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
+    const video = document.createElement("video");
+    video.srcObject = cameraStream;
+    video.muted = true;
+    await video.play();
+    await new Promise(r => (video.readyState >= 2 ? r() : (video.onloadeddata = r)));
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 480;
+    canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+    dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+    video.pause();
+    video.srcObject = null;
+  } catch (err) {
+    console.error("camera capture failed", err);
+  } finally {
+    stopCameraTracks();          // ALWAYS — even if the draw threw
+  }
+  call("camera_frame", requestId, dataUrl);
+}
+
 let lastConfirm = null;   // payload of the card currently on screen (11A)
 
 function confirmCardHtml(p) {
@@ -447,6 +482,47 @@ function settingsHtml(s) {
         no cloud round-trip.</label>
     </div>
 
+    <h4 class="settings-section">Vision (screen &amp; camera)</h4>
+    <ul class="settings-hint" style="margin:0 0 10px 18px">
+      <li>Anna never watches silently. A single frame is captured only when you
+          ask ("look at my screen", "read this error", "what do you see").</li>
+      <li>"Watch my screen" takes <b>one frame every couple of seconds</b> —
+          each read once and thrown away. It is never a video stream, shows a
+          badge the whole time, and stops itself when idle.</li>
+      <li>The camera opens for <b>exactly one frame</b>, then stops. No
+          recording, no face recognition.</li>
+      <li>Say <b>"privacy mode"</b> to stop screen watching, the camera, and any
+          Live audio session at once.</li>
+      <li>Screens that look like they hold passwords, keys or banking details
+          are <b>not analyzed at all</b> until you explicitly allow it.</li>
+    </ul>
+    <p class="settings-hint" style="color:${s.ocr_ready ? "var(--success)" : "var(--warn)"}">
+      ${s.ocr_ready ? "✅ Local OCR ready — Anna reads screen text on this PC."
+        : "⚠ No local OCR. Install Tesseract (winget install UB-Mannheim.TesseractOCR, then pip install pytesseract) so Anna can read text without any cloud."}</p>
+    <div class="form-row" style="flex-direction:row;align-items:center;gap:10px">
+      <input type="checkbox" id="set-cloud_vision_consent"
+             ${s.cloud_vision_consent ? "checked" : ""} style="width:auto">
+      <label for="set-cloud_vision_consent" style="margin:0">
+        Allow screen/camera <b>frames to be sent to Gemini</b> for a deeper
+        description. Off = local OCR only, images never leave this PC.</label>
+    </div>
+    <div class="form-row"><label>Cloud vision model (preview tier — may change)</label>
+      <input id="set-vision_cloud_model" value="${esc(s.vision_cloud_model || "")}"></div>
+    <div class="form-row"><label>Watching mode: seconds between frames</label>
+      <input id="set-screen_watch_interval_s" type="number" step="0.5" min="0.5" max="30"
+             value="${esc(s.screen_watch_interval_s ?? 1.5)}"></div>
+    <div class="form-row"><label>Watching mode: auto-stop after idle (seconds)</label>
+      <input id="set-screen_watch_idle_timeout_s" type="number" min="10" max="3600"
+             value="${esc(s.screen_watch_idle_timeout_s ?? 120)}"></div>
+    <div class="form-row" style="flex-direction:row;align-items:center;gap:10px">
+      <input type="checkbox" id="set-vision_save_captures"
+             ${s.vision_save_captures ? "checked" : ""} style="width:auto">
+      <label for="set-vision_save_captures" style="margin:0">
+        Save every capture to disk. Off = frames are processed once and
+        discarded (only the extracted text is kept).</label>
+    </div>
+    <button class="ghost-btn" id="privacy-mode-btn">🔒 Privacy mode — stop all capture now</button>
+
     <h4 class="settings-section">Cloud brain</h4>
     <div class="form-row"><label>Cloud brain (faster, needs internet)</label>
       ${selectHtml("brain_mode", s.brain_mode, ["hybrid", "local_only"])}</div>
@@ -621,6 +697,11 @@ function collectSettings() {
     hands_free_followup: !!$("#set-hands_free_followup")?.checked,
     // key only travels when the user actually typed one (never the mask)
     ...(val("groq_api_key") ? { groq_api_key: val("groq_api_key") } : {}),
+    cloud_vision_consent: !!$("#set-cloud_vision_consent")?.checked,
+    vision_cloud_model: val("vision_cloud_model"),
+    screen_watch_interval_s: parseFloat(val("screen_watch_interval_s")) || 1.5,
+    screen_watch_idle_timeout_s: parseFloat(val("screen_watch_idle_timeout_s")) || 120,
+    vision_save_captures: !!$("#set-vision_save_captures")?.checked,
     engine_mode: val("engine_mode"),
     gemini_live_model: val("gemini_live_model"),
     gemini_live_voice: val("gemini_live_voice"),
@@ -710,6 +791,34 @@ const handlers = {
     }
   },
 
+  // 11B: persistent indicators. Screen watching = cyan badge + border for
+  // its whole life. Camera = red badge, on for exactly one frame.
+  screen_vision: (p) => {
+    const on = !!(p && p.active);
+    document.body.classList.toggle("screen-vision", on);
+    const badge = $("#screen-vision-badge");
+    if (badge) badge.classList.toggle("hidden", !on);
+  },
+
+  camera_active: (p) => {
+    const on = !!(p && p.active);
+    document.body.classList.toggle("camera-on", on);
+    const badge = $("#camera-badge");
+    if (badge) badge.classList.toggle("hidden", !on);
+  },
+
+  privacy_mode: () => {
+    document.body.classList.remove("screen-vision", "camera-on", "live-streaming");
+    ["#screen-vision-badge", "#camera-badge", "#live-badge"]
+      .forEach(sel => $(sel) && $(sel).classList.add("hidden"));
+    stopCameraTracks();
+  },
+
+  // Mira's pattern: open getUserMedia, draw ONE frame, stop every track
+  // immediately. No recording, nothing retained.
+  camera_capture: (p) => captureCameraFrame(p && p.id),
+  camera_stop: () => stopCameraTracks(),
+
   // 10D.2: running session cost estimate in the Live badge + dev tools.
   live_cost: (p) => {
     const badge = $("#live-badge");
@@ -785,6 +894,11 @@ const handlers = {
     openModal("Settings", settingsHtml(p));
     $("#settings-save").addEventListener("click", () => {
       call("save_settings", collectSettings());
+      closeModal();
+    });
+    // 11B kill switch — must work without saving anything first.
+    $("#privacy-mode-btn").addEventListener("click", () => {
+      call("privacy_mode");
       closeModal();
     });
     // Test buttons save the current form first so tests use what you typed.

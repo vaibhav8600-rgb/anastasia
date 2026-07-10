@@ -188,6 +188,15 @@ class JsApi:
         """Resolve the first-run Gemini Live consent card (10D)."""
         self._controller.live_consent(bool(accepted))
 
+    # -- vision (11B) ------------------------------------------------------
+    def camera_frame(self, request_id, data_url) -> None:
+        """The one frame getUserMedia captured, as a data URL."""
+        self._controller.camera_frame(request_id, data_url)
+
+    def privacy_mode(self) -> None:
+        """Kill switch: screen watching + camera + Live audio session."""
+        self._controller.privacy_mode()
+
     def recheck(self) -> None:
         if self._bridge._on_recheck:
             self._bridge._on_recheck()

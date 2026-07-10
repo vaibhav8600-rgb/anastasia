@@ -41,10 +41,11 @@ class DataClass(Enum):
     # privacy step in the project. Gemini Live sessions only, opt-in only;
     # see live_audio_allowed() for the hard gate.
     LIVE_AUDIO_BIDIRECTIONAL = "live_audio_bidirectional"
+    CAMERA = "camera"                  # webcam frames (Phase 11B)
 
 
 NEVER_CLOUD = {DataClass.FILE_CONTENT, DataClass.SCREENSHOT, DataClass.AUDIO,
-               DataClass.LIVE_AUDIO_STREAM,
+               DataClass.LIVE_AUDIO_STREAM, DataClass.CAMERA,
                DataClass.LIVE_AUDIO_BIDIRECTIONAL}  # never to the BRAIN
 
 
@@ -63,6 +64,16 @@ def cloud_allowed(payload_classes, config) -> tuple[bool, str]:
     if DataClass.CLIPBOARD in classes and \
             not getattr(config, "allow_clipboard_to_cloud", False):
         return False, "clipboard kept local (opt-in is off)"
+    return True, ""
+
+
+def vision_cloud_allowed(config) -> tuple[bool, str]:
+    """11B.4 hard gate for the ONLY way a screen/camera frame may leave this
+    machine: an explicit, separate cloud-vision consent toggle (off by
+    default). Local OCR and heuristics need no consent — they never leave.
+    SCREENSHOT/CAMERA stay in NEVER_CLOUD for the text brain regardless."""
+    if not getattr(config, "cloud_vision_consent", False):
+        return False, "cloud vision consent is off — frames stay on this PC"
     return True, ""
 
 

@@ -61,6 +61,10 @@ _DEFAULT_MIGRATIONS = {
     "max_record_seconds": (30, 8),
     "stt_language": ("auto", "en"),
     "gemini_live_voice": ("Kore", "Sulafat"),   # 10D: the warm HD voice
+    # 11B: a long-edge cap of 1280 squashed dual-monitor grabs to ~360px tall.
+    "vision_max_edge": (1280, 2600),
+    # gemini-2.5-flash now 404s for newly-issued keys (verified 2026-07).
+    "vision_cloud_model": ("gemini-2.5-flash", "gemini-3-flash-preview"),
 }
 
 
@@ -208,6 +212,28 @@ class AppConfig(BaseModel):
     # timeout. Persists across restarts. Half-duplex + barge-in still apply.
     hands_free: bool = False
     hands_free_idle_timeout_s: float = 45.0
+
+    # Vision (11B). Capture is OFF until explicitly triggered — Anna never
+    # watches silently. Mode A (on-demand single frame) runs only on a trigger
+    # phrase; Mode B (low-frequency watching) must be started explicitly and
+    # auto-stops when idle. Frames are processed once and discarded.
+    screen_watch_interval_s: float = 1.5     # Mode B: one frame per N seconds
+    screen_watch_idle_timeout_s: float = 120.0
+    # Downscale budget before OCR/transport. An AREA budget, not a long-edge
+    # one: a dual 2560x1440 desktop is 5120px wide, and capping the long edge
+    # squashes it to ~360px tall — unreadable. max_edge is only a backstop.
+    vision_max_pixels: int = 1_600_000
+    vision_max_edge: int = 2600
+    vision_save_captures: bool = False       # raw frames are never kept unless on
+    ocr_backend: str = "auto"                # auto | tesseract | off
+    tesseract_exe: str = ""                  # path to tesseract.exe if not on PATH
+    # Cloud vision (separate, explicit consent — screen/camera frames may be
+    # sent to Gemini). Off by default; local OCR needs no consent.
+    cloud_vision_consent: bool = False
+    # Verified live 2026-07: gemini-2.5-flash now 404s for new keys and
+    # gemini-3.5-flash/gemini-flash-latest were 503. This one answered
+    # correctly. Preview tier — expect churn; editable in Settings.
+    vision_cloud_model: str = "gemini-3-flash-preview"
 
     # Tools
     default_browser: str = ""            # empty = system default; or alias key e.g. "chrome"

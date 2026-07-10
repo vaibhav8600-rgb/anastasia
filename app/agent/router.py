@@ -124,6 +124,41 @@ def match_rule(raw: str, config, memory=None) -> Optional[ActionPlan]:
             args["screen"] = 0   # explicit all-screens
         return plan("take_screenshot", args=args, msg="Screenshot coming right up.")
 
+    # --- vision (11B) — capture happens ONLY on these explicit triggers ---
+    if re.search(r"\bprivacy mode\b", t):
+        return plan("privacy_mode", msg="Privacy mode.")
+    if re.search(r"\bstop (looking|watching)\b", t) \
+            or re.search(r"\bturn off (the )?(screen vision|screen watching)\b", t) \
+            or re.search(r"\bstop (the )?screen vision\b", t):
+        return plan("stop_screen_watch", msg="Okay, I'll stop looking.")
+    # "anyway" = the user overriding a sensitive-content refusal; the safety
+    # validator turns that into a confirmation (never a silent bypass).
+    anyway = bool(re.search(r"\banyway\b|\bgo ahead and look\b", t))
+    extra = {"allow_sensitive": True} if anyway else {}
+    if re.match(r"what do you see\b", t) \
+            or (re.search(r"\bcamera\b", t)
+                and re.search(r"\b(look|see|through|use|open|check|show)\b", t)):
+        return plan("camera_look", args=dict(extra),
+                    msg="Taking a quick look through the camera.")
+    if re.search(r"\b(watch|keep an eye on)\b.*\bscreen\b", t) \
+            or re.search(r"\bstart (the )?screen (vision|watching)\b", t):
+        return plan("start_screen_watch", msg="Watching your screen.")
+    if re.search(r"\b(analy[sz]e|read|look at|describe)\b.*\b(this|the|active) window\b", t):
+        return plan("active_window_capture", args=dict(extra),
+                    msg="Looking at that window.")
+    if re.search(r"\bunder (my |the )?(mouse|cursor)\b", t) \
+            or re.search(r"\b(look at|read)\b.*\b(my |the )?cursor\b", t):
+        return plan("region_capture", args=dict(extra),
+                    msg="Looking around your cursor.")
+    if re.search(r"\b(look at|check|describe)\b\s+(my |the )?screen\b", t) \
+            or re.search(r"\bwhat'?s on (my |the )?screen\b", t) \
+            or re.search(r"\bwhat is on (my |the )?screen\b", t) \
+            or re.search(r"\bcan you see (my |the )?screen\b", t) \
+            or re.search(r"\bread (this|the) error\b", t) \
+            or re.search(r"\bsummari[sz]e (this|the) page\b", t):
+        return plan("look_at_screen", args=dict(extra),
+                    msg="Taking a look at your screen.")
+
     # --- clipboard --------------------------------------------------
     if re.search(r"\bsummari[sz]e\b.*\bclipboard\b", t):
         return plan("summarize_clipboard", msg="Let me read that and sum it up for you.")
@@ -345,6 +380,7 @@ class Agent:
         from app.llm.providers import BrainRouter
         self.brain = BrainRouter(config, lambda: self.llm)
         self.recent_chat_turns = None   # set by controller -> conversation reader
+        self.vision = None              # VisionService (11B), set by controller
 
     # -- planning -----------------------------------------------------
     def plan_rule(self, text: str) -> Optional[ActionPlan]:
@@ -469,5 +505,5 @@ class Agent:
         if plan.intent in ("ask_clarification", "no_action"):
             return ToolResult(True, plan.assistant_message or "Okay.")
         ctx = ToolContext(config=self.config, memory=self.memory, llm=self.llm,
-                          brain=self.brain)
+                          brain=self.brain, vision=self.vision)
         return run_tool(plan.tool_name or plan.intent, plan.arguments, ctx)

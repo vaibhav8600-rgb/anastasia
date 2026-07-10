@@ -31,3 +31,8 @@ pytest>=8.0
 
 # Optional — natural Kokoro voice (also download model + voices in Settings):
 # kokoro-onnx>=0.5
+
+# Optional — local OCR so Anna can READ your screen with nothing leaving the
+# PC (11B). Needs the Tesseract binary as well:
+#   winget install UB-Mannheim.TesseractOCR
+# pytesseract>=0.3.10

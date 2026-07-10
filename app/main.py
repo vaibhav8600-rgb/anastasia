@@ -82,6 +82,19 @@ class Controller:
         self._live = None                  # active Gemini Live conversation
         self._live_fallback_noted = False  # one honest info line per session
 
+        # Vision (11B). Constructed but dormant: nothing captures until an
+        # explicit trigger phrase, and the camera opener is only wired once
+        # the webview exists.
+        from app.vision.service import VisionService
+        self.vision = VisionService(
+            self.config,
+            dispatch=self._vision_dispatch,
+            stop_live=self._stop_live_for_privacy)
+        self.vision.camera.opener = self._open_browser_camera
+        self.agent.vision = self.vision
+        self._camera_frames = {}           # request_id -> [Event, data_url]
+        self._camera_seq = 0
+
         self.wake_listener = None
         self._wake_warned = False          # one clean warning per session
         self._mic_lock = threading.Lock()
@@ -789,6 +802,63 @@ class Controller:
         else:
             self.set_state("ready")
 
+    # ----------------------------------------------------- vision (11B)
+    def _vision_dispatch(self, event: str, payload: dict) -> None:
+        """Screen-vision / camera indicators. These are the only signal the
+        user needs that something is being captured, so they must always fire."""
+        if hasattr(self.ui, "dispatch"):
+            self.ui.dispatch(event, payload)
+
+    def _stop_live_for_privacy(self) -> bool:
+        """privacy_mode also kills any Gemini Live audio session (11B.5)."""
+        if self._live is None:
+            return False
+        self._end_live_conversation("privacy mode")
+        return True
+
+    def _open_browser_camera(self):
+        """Mira's pattern: the WebView opens getUserMedia, draws ONE frame,
+        stops every track, and hands back a data URL."""
+        from app.vision.camera import BrowserCameraStream
+        if not hasattr(self.ui, "dispatch"):
+            from app.vision import CameraUnavailable
+            raise CameraUnavailable("No window to open the camera in.")
+        self._camera_seq += 1
+        request_id = self._camera_seq
+        done = threading.Event()
+        self._camera_frames[request_id] = [done, ""]
+
+        def request(timeout_s: float) -> str:
+            self.ui.dispatch("camera_capture", {"id": request_id})
+            if not done.wait(timeout_s):
+                self._camera_frames.pop(request_id, None)
+                from app.vision import CameraUnavailable
+                raise CameraUnavailable(
+                    "The camera didn't respond — check the window's camera "
+                    "permission.")
+            return self._camera_frames.pop(request_id, [None, ""])[1]
+
+        return BrowserCameraStream(
+            request, stop_fn=lambda: self.ui.dispatch("camera_stop", {}))
+
+    def camera_frame(self, request_id, data_url: str) -> None:
+        """js_api: the single frame the browser captured. Raw pixels are never
+        logged — only that a frame of N bytes arrived."""
+        entry = self._camera_frames.get(int(request_id))
+        if entry is None:
+            return
+        entry[1] = str(data_url or "")
+        devlog.log(f"Vision: camera frame received ({len(entry[1])} b64 chars)")
+        entry[0].set()
+
+    def privacy_mode(self) -> None:
+        """js_api / voice: the one switch that stops screen watching, the
+        camera, and any Live audio session."""
+        stopped = self.vision.privacy_mode()
+        parts = [name for name, was_on in stopped.items() if was_on]
+        self.show_info("Privacy mode — " + (", ".join(parts) + " stopped."
+                                            if parts else "nothing was running."))
+
     def _emit_live_indicator(self, active: bool) -> None:
         """Unmistakable 'audio is streaming to Google' badge (10C; 10D adds
         the running session-cost estimate to it)."""
@@ -1274,7 +1344,18 @@ class Controller:
                 "live_idle_close_s": c.live_idle_close_s,
                 "live_monthly_cap_usd": c.live_monthly_cap_usd,
                 "live_month_spend": self._live_month_spend(),
+                # Vision (11B) — capture is trigger-only; cloud is opt-in.
+                "cloud_vision_consent": c.cloud_vision_consent,
+                "vision_cloud_model": c.vision_cloud_model,
+                "screen_watch_interval_s": c.screen_watch_interval_s,
+                "screen_watch_idle_timeout_s": c.screen_watch_idle_timeout_s,
+                "vision_save_captures": c.vision_save_captures,
+                "ocr_ready": self._ocr_ready(),
             })
+
+    def _ocr_ready(self) -> bool:
+        from app.vision.ocr import ocr_status
+        return ocr_status(self.config)[0]
 
     def _masked_groq_key(self) -> str:
         from app.llm.providers import mask_key
@@ -1321,6 +1402,10 @@ class Controller:
         "gemini_live_voice": str, "live_affective_dialog": bool,
         "live_price_in_per_min": float, "live_price_out_per_min": float,
         "live_idle_close_s": float, "live_monthly_cap_usd": float,
+        "cloud_vision_consent": bool, "vision_cloud_model": str,
+        "screen_watch_interval_s": float, "screen_watch_idle_timeout_s": float,
+        "vision_save_captures": bool, "confirmation_voice_listen": bool,
+        "confirmation_timeout_s": float,
     }
     _SETTINGS_CHOICES = {
         "animation_quality": {"low", "medium", "high"},
@@ -1551,6 +1636,11 @@ class Controller:
             if self._live is not None:
                 # never leave a billed Live session behind (10A.3)
                 self._end_live_conversation("app closing")
+            try:
+                self.vision.stop_watching("app closing")   # never watch on past exit
+                self.vision.camera.stop()
+            except Exception:
+                pass
             self._hands_free_active = False
             if self._idle_timer is not None:
                 self._idle_timer.cancel()

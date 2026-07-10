@@ -32,7 +32,17 @@ SAFE_TOOLS = {
     "clipboard_read", "clipboard_write", "summarize_clipboard",
     "type_text", "press_hotkey", "browser_open", "speak",
     "ask_clarification", "no_action",
+    # Vision (11B): capture is user-triggered and never persists a frame.
+    # Overriding the sensitive-content refusal is escalated below.
+    "look_at_screen", "screen_capture", "active_window_capture",
+    "region_capture", "camera_look",
+    "start_screen_watch", "stop_screen_watch", "privacy_mode",
 }
+
+# Vision tools that will analyze a frame — overriding the sensitive-content
+# refusal on these is what needs the user's explicit OK.
+VISION_LOOK_TOOLS = {"look_at_screen", "screen_capture",
+                     "active_window_capture", "region_capture", "camera_look"}
 
 # Tools that always require explicit user confirmation.
 CONFIRM_TOOLS = {"run_terminal", "window_control", "delete_files"}
@@ -151,6 +161,16 @@ def validate_action(plan, config) -> SafetyResult:
         requires = True
         risk = _escalate(risk, "medium")
         reason = "Window control affects your active window."
+
+    elif tool in VISION_LOOK_TOOLS:
+        # 11B.4: looking at a screen Anna flagged as sensitive (passwords,
+        # keys, banking) is only ever done with an explicit confirmation.
+        if str(args.get("allow_sensitive", "")).strip().lower() in \
+                ("1", "true", "yes", "on"):
+            requires = True
+            risk = _escalate(risk, "high")
+            reason = ("That screen looks like it holds credentials or payment "
+                      "details — analyzing it needs your explicit OK.")
 
     elif tool == "type_text":
         text = str(args.get("text", ""))

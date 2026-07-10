@@ -217,6 +217,36 @@ python app\main.py --doctor   # health check
   short for reliable recognition, and there's a ~1–3 s recognition delay
   since it's local speech-to-text. Prefer the classic "Hey Jarvis" wake model?
   `pip install openwakeword` and set `wake_word_backend: "openwakeword"`.
+- **Vision — Anna can look, but only when you ask.** Nothing is ever captured
+  silently, and a badge is on screen for the entire time anything is.
+
+  | Say | What happens |
+  |---|---|
+  | `look at my screen` · `what's on my screen` · `read this error` · `summarize this page` | **one** frame of the desktop, read once, thrown away |
+  | `analyze this window` | just the focused window (best for reading text) |
+  | `what's under my cursor` | a small box around the pointer |
+  | `watch my screen` | **one frame every ~1.5 s**, each read independently and discarded — a cyan *Screen Vision Active* badge + border stays up the whole time, and it stops itself when idle |
+  | `stop looking` | ends watching |
+  | `what do you see` · `look through the camera` | camera opens for **exactly one frame**, then stops — red *Camera on* badge for precisely that moment |
+  | **`privacy mode`** | kills screen watching, the camera, **and** any Gemini Live audio session, instantly |
+
+  **This is snapshots, never a stream.** Even watching mode grabs single stills;
+  no video feed is ever opened to any cloud provider, and no frame outlives the
+  moment it is read.
+
+  **Frames stay on this PC by default.** Text is extracted by local OCR
+  (install Tesseract: `winget install UB-Mannheim.TesseractOCR` then
+  `pip install pytesseract` — without it Anna says so honestly rather than
+  pretending she read your screen). Sending a frame to Gemini for a richer
+  description needs its **own** consent toggle in Settings → Vision, separate
+  from every other cloud setting and **off by default**. Frames are never
+  saved to disk unless you turn that on, and never appear in the logs.
+
+  **Screens that look sensitive are not analyzed at all** — not locally, not in
+  the cloud. If Anna spots a password field, an API key, or words like "account
+  number" or "CVV", she stops and asks. Overriding that ("look at my screen
+  anyway") is a **high-risk action**, so it needs the strong approval phrase.
+
 - Full command list: [SKILL.md](SKILL.md).
 
 ## Troubleshooting
@@ -242,6 +272,12 @@ python app\main.py --doctor   # health check
 | Saying "yes" doesn't approve a command | Destructive-tier actions (terminal, delete, move/rename) need the strong phrase **"Anna approve"** — the card is red and says so. Casual words always work for *cancel* |
 | Anna doesn't hear my spoken "approve" | She doesn't open the mic by herself while a card is up. Press Ctrl+Alt+Space and say it, click the card, or set `confirmation_voice_listen: true` to auto-listen in hands-free mode |
 | "I'm still waiting on your approval for the last one" | Only one confirmation can be pending. Answer or cancel it (or wait 30 s for it to expire) and the new one will be offered |
+| "I can't read the text: install Tesseract OCR" | Local OCR isn't installed. `winget install UB-Mannheim.TesseractOCR` then `pip install pytesseract`. Everything stays on this PC. Alternatively enable cloud vision in Settings → Vision |
+| Cyan border / "Screen Vision Active" badge | Watching mode is on (one frame every ~1.5 s, each discarded). Say "stop looking" or "privacy mode". It also stops itself when idle |
+| Red "Camera on" badge stays up | It shouldn't — the camera is stopped in a `finally` block after a single frame. If it sticks, say "privacy mode" and file an issue with the Developer Tools log |
+| "the camera didn't respond" | The app window needs camera permission in Windows (Settings → Privacy → Camera → allow desktop apps) |
+| Anna refuses to look at a screen | She spotted something that looks like a password, API key or banking detail and won't analyze it. Say "look at my screen anyway" and approve with the strong phrase |
+| Cloud vision says a model is unavailable | Preview models churn. Anna retries a fallback model automatically and, failing that, degrades to local OCR. Set a different `vision_cloud_model` in Settings → Vision |
 | "Engine: Pipeline (Live offline)" chip | Gemini Live is selected but unreachable (no key / no consent / offline / circuit open after 3 failures). Anna keeps working on the pipeline; Live auto-probes after 120s |
 | Purple mic ring / "Live — audio streaming to Google" badge | Normal in Live mode — continuous mic audio is going to Google and the session is metered. Tap the mic to end it; idle sessions auto-close |
 | Live session ends by itself mid-conversation | Either the ~15-min session cap hit without a resumption handle (rare; it normally resumes invisibly), the 20s stall watchdog fired, or the 60s idle auto-close — all fall back cleanly. See Developer Tools for which |
