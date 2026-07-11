@@ -234,6 +234,11 @@ class AppConfig(BaseModel):
     ocr_fast_pixels: int = 500_000
     ocr_max_pixels: int = 1_100_000
     ocr_timeout_s: int = 8
+    camera_device: str = ""              # browser deviceId; empty = default cam
+    camera_preview: bool = True          # show a live self-view while capturing
+    # In a Live conversation, send the camera frame straight into the session
+    # so Anna sees it natively (faster, no separate call) — still one frame.
+    live_native_camera: bool = True
     # Cloud vision (separate, explicit consent — screen/camera frames may be
     # sent to Gemini). Off by default; local OCR needs no consent.
     cloud_vision_consent: bool = False

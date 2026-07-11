@@ -315,6 +315,16 @@ class LiveEngine:
         if not safety.allowed or safety.requires_confirmation:
             return
         self._turn_rule_done = True
+        # Camera in a Live session: hand the frame STRAIGHT to the model so it
+        # sees the photo itself (better than a pre-written description, and no
+        # slow separate vision call). Still one frame — a snapshot, not a
+        # stream. Runs on a worker: the browser camera warm-up blocks ~1-6s.
+        if plan.tool_name == "camera_look" and self._native_camera_ok():
+            self._recent_local = ("camera_look", time.monotonic())
+            devlog.log("[live_rule] camera_look -> native Live vision")
+            threading.Thread(target=self._native_camera_look, daemon=True,
+                             name="anna-live-camera").start()
+            return
         result = self.agent.execute(plan)             # whitelisted executor
         self._recent_local = (plan.tool_name, time.monotonic())
         devlog.log(f"[live_rule] short-circuit: {plan.tool_name} "
@@ -368,6 +378,51 @@ class LiveEngine:
         except Exception as e:
             devlog.warn(f"live: couldn't hand the result back "
                         f"({' '.join(str(e).split())[:100]})")
+
+    def _native_camera_ok(self) -> bool:
+        """Native Live camera is on, a session is live, cloud vision is
+        consented (the frame leaves the machine either way), and we can reach
+        the camera."""
+        if not getattr(self.config, "live_native_camera", True):
+            return False
+        if self.session is None or not self.active:
+            return False
+        from app.llm.providers import vision_cloud_allowed
+        if not vision_cloud_allowed(self.config)[0]:
+            return False
+        vision = getattr(self.agent, "vision", None)
+        return vision is not None and getattr(vision, "camera", None) is not None
+
+    def _native_camera_look(self) -> None:
+        """Capture ONE camera frame and send it into the live session; the
+        model describes what it sees in its own voice."""
+        vision = getattr(self.agent, "vision", None)
+        try:
+            frame = vision.camera.capture_once()
+        except Exception as e:
+            msg = " ".join(str(e).split())[:160]
+            devlog.warn(f"[live_rule] native camera failed: {msg}")
+            if self.session is not None and self.active:
+                self.session.send_text(
+                    f"(The camera couldn't take a photo: {msg}) Tell the user "
+                    "briefly and suggest they try again.")
+            return
+        try:
+            import io
+            buf = io.BytesIO()
+            frame.image.convert("RGB").save(buf, "JPEG", quality=80)
+            jpeg = buf.getvalue()
+        finally:
+            frame.release()
+        if self.session is None or not self.active:
+            return
+        # Image AND prompt in ONE turn — sending them separately makes the
+        # model describe an image it never really looked at.
+        self.session.send_image(
+            jpeg,
+            "This is a photo from the user's camera, taken just now. Describe "
+            "what you see — the person, objects and setting — warmly and "
+            "briefly. Don't try to name or identify anyone.")
 
     def _skip_check(self, name: str, args: dict):
         """Bridge hook: dedup a model tool call that repeats what the local

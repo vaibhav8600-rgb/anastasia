@@ -154,16 +154,24 @@ function nextVideoFrame(video) {
   return new Promise(r => requestAnimationFrame(() => r()));
 }
 
-/* Open the camera, grab exactly one GOOD frame, stop it. The stream never
-   outlives this function — the stop happens before the frame is sent. */
-async function captureCameraFrame(requestId) {
+/* Open the camera, show a live self-preview, grab exactly one GOOD frame,
+   stop it. The stream never outlives this function. `device` selects a
+   specific webcam; `preview` shows the small self-view. */
+async function captureCameraFrame(requestId, device, preview) {
   let dataUrl = "";
+  const box = $("#camera-preview");
+  const shown = preview !== false && box;
   try {
-    cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
-    const video = document.createElement("video");
+    const constraints = { video: device ? { deviceId: { ideal: device } } : true };
+    cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
+    // Reuse the on-screen preview <video> as the capture source when showing
+    // the self-view, else a detached element.
+    const video = (shown && $("#camera-preview-video"))
+      || document.createElement("video");
     video.srcObject = cameraStream;
     video.muted = true;
     video.playsInline = true;
+    if (shown) box.classList.remove("hidden");
     await video.play();
     if (video.readyState < 2) {
       await new Promise(r => (video.onloadeddata = r));
@@ -187,14 +195,35 @@ async function captureCameraFrame(requestId) {
     } while (Date.now() < deadline);
 
     dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+    // Linger a moment so you actually SEE the self-view, then tear it down.
+    if (shown) await sleep(1000);
     video.pause();
-    video.srcObject = null;
+    if (!shown) video.srcObject = null;
   } catch (err) {
     console.error("camera capture failed", err);
   } finally {
+    if (box) box.classList.add("hidden");
     stopCameraTracks();          // ALWAYS — even if the draw threw
   }
   call("camera_frame", requestId, dataUrl);
+}
+
+/* Populate the Settings camera dropdown. Labels are only visible after camera
+   permission has been granted once (a browser privacy rule). */
+async function loadCameraDevices(selected) {
+  const sel = $("#set-camera_device");
+  if (!sel || !navigator.mediaDevices?.enumerateDevices) return;
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams = devices.filter(d => d.kind === "videoinput");
+    const opts = [`<option value="">Default camera</option>`];
+    cams.forEach((c, i) => {
+      const label = c.label || `Camera ${i + 1}`;
+      const on = c.deviceId === selected ? "selected" : "";
+      opts.push(`<option value="${esc(c.deviceId)}" ${on}>${esc(label)}</option>`);
+    });
+    sel.innerHTML = opts.join("");
+  } catch (err) { /* enumerate can fail before permission — leave default */ }
 }
 
 let lastConfirm = null;   // payload of the card currently on screen (11A)
@@ -567,6 +596,17 @@ function settingsHtml(s) {
     </div>
     <div class="form-row"><label>Cloud vision model (preview tier — may change)</label>
       <input id="set-vision_cloud_model" value="${esc(s.vision_cloud_model || "")}"></div>
+    <div class="form-row"><label>Camera</label>
+      <select id="set-camera_device"><option value="">Default camera</option></select></div>
+    <p class="settings-hint">Camera names appear after you've used the camera
+      once (a browser privacy rule).</p>
+    <div class="form-row" style="flex-direction:row;align-items:center;gap:10px">
+      <input type="checkbox" id="set-camera_preview"
+             ${s.camera_preview !== false ? "checked" : ""} style="width:auto">
+      <label for="set-camera_preview" style="margin:0">
+        Show a live self-view while the camera is on, so you can see what it
+        captures.</label>
+    </div>
     <div class="form-row"><label>Watching mode: seconds between frames</label>
       <input id="set-screen_watch_interval_s" type="number" step="0.5" min="0.5" max="30"
              value="${esc(s.screen_watch_interval_s ?? 1.5)}"></div>
@@ -758,6 +798,8 @@ function collectSettings() {
     ...(val("groq_api_key") ? { groq_api_key: val("groq_api_key") } : {}),
     cloud_vision_consent: !!$("#set-cloud_vision_consent")?.checked,
     vision_cloud_model: val("vision_cloud_model"),
+    camera_device: val("camera_device") || "",
+    camera_preview: !!$("#set-camera_preview")?.checked,
     screen_watch_interval_s: parseFloat(val("screen_watch_interval_s")) || 1.5,
     screen_watch_idle_timeout_s: parseFloat(val("screen_watch_idle_timeout_s")) || 120,
     vision_save_captures: !!$("#set-vision_save_captures")?.checked,
@@ -875,7 +917,8 @@ const handlers = {
 
   // Mira's pattern: open getUserMedia, draw ONE frame, stop every track
   // immediately. No recording, nothing retained.
-  camera_capture: (p) => captureCameraFrame(p && p.id),
+  camera_capture: (p) => captureCameraFrame(p && p.id, p && p.device,
+                                            p && p.preview),
   camera_stop: () => stopCameraTracks(),
 
   // 10D.2: running session cost estimate in the Live badge + dev tools.
@@ -951,6 +994,7 @@ const handlers = {
   history: (p) => openModal("Command history", historyHtml(p.rows)),
   settings: (p) => {
     openModal("Settings", settingsHtml(p));
+    loadCameraDevices(p.camera_device || "");   // 11B: list webcams
     $("#settings-save").addEventListener("click", () => {
       call("save_settings", collectSettings());
       closeModal();

@@ -136,6 +136,29 @@ class GeminiLiveSession:
             except RuntimeError:
                 pass
 
+    def send_image(self, jpeg_bytes: bytes, prompt: str = "",
+                   mime_type: str = "image/jpeg") -> None:
+        """Send ONE still image (camera photo / screen grab) into the live
+        conversation so the model sees it natively and describes it in its own
+        voice. A single frame, never a stream (11B: snapshots, not streaming).
+
+        The image and the prompt go in ONE structured turn. Verified against
+        the real API: sending the frame on the realtime *video* channel and the
+        question as a separate turn makes the model hallucinate (it described a
+        red circle as "a yellow triangle") because the two aren't reliably
+        associated. In a single client-content turn it reads the image
+        correctly.
+        """
+        if self.active and self._loop is not None and jpeg_bytes:
+            self._awaiting_reply = True
+            self._touch()
+            try:
+                self._loop.call_soon_threadsafe(
+                    self._in_queue.put_nowait,
+                    ("image", (jpeg_bytes, mime_type, prompt)))
+            except RuntimeError:
+                pass
+
     def send_tool_response(self, call_id: str, name: str, result: dict) -> None:
         """10B: answer a tool call after LOCAL validation/execution."""
         if self.active and self._loop is not None:
@@ -315,6 +338,15 @@ class GeminiLiveSession:
                 await session.send_realtime_input(
                     audio=types.Blob(data=payload,
                                      mime_type=f"audio/pcm;rate={INPUT_RATE}"))
+            elif kind == "image":
+                data, mime, prompt = payload
+                parts = [types.Part(inline_data=types.Blob(
+                    mime_type=mime, data=data))]
+                if prompt:
+                    parts.append(types.Part(text=prompt))
+                await session.send_client_content(
+                    turns=types.Content(role="user", parts=parts),
+                    turn_complete=True)
             elif kind == "text":
                 await session.send_client_content(
                     turns={"role": "user", "parts": [{"text": payload}]},

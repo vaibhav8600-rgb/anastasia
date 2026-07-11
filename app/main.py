@@ -829,7 +829,10 @@ class Controller:
         self._camera_frames[request_id] = [done, ""]
 
         def request(timeout_s: float) -> str:
-            self.ui.dispatch("camera_capture", {"id": request_id})
+            self.ui.dispatch("camera_capture", {
+                "id": request_id,
+                "device": getattr(self.config, "camera_device", "") or "",
+                "preview": bool(getattr(self.config, "camera_preview", True))})
             if not done.wait(timeout_s):
                 self._camera_frames.pop(request_id, None)
                 from app.vision import CameraUnavailable
@@ -1350,6 +1353,8 @@ class Controller:
                 "screen_watch_interval_s": c.screen_watch_interval_s,
                 "screen_watch_idle_timeout_s": c.screen_watch_idle_timeout_s,
                 "vision_save_captures": c.vision_save_captures,
+                "camera_device": c.camera_device,
+                "camera_preview": c.camera_preview,
                 "ocr_ready": self._ocr_ready(),
             })
 
@@ -1406,6 +1411,7 @@ class Controller:
         "screen_watch_interval_s": float, "screen_watch_idle_timeout_s": float,
         "vision_save_captures": bool, "confirmation_voice_listen": bool,
         "confirmation_timeout_s": float,
+        "camera_device": str, "camera_preview": bool, "live_native_camera": bool,
     }
     _SETTINGS_CHOICES = {
         "animation_quality": {"low", "medium", "high"},

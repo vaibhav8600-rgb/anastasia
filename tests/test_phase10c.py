@@ -71,6 +71,10 @@ class FakeLiveSession:
     def send_text(self, text):
         self.sent_text.append(text)
 
+    def send_image(self, jpeg, prompt="", mime_type="image/jpeg"):
+        self.sent_images = getattr(self, "sent_images", [])
+        self.sent_images.append((jpeg, prompt, mime_type))
+
     def send_tool_response(self, call_id, name, result):
         self.tool_responses.append((call_id, name, result))
 
