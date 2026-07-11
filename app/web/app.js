@@ -163,6 +163,14 @@ function nextVideoFrame(video) {
   return new Promise(r => requestAnimationFrame(() => r()));
 }
 
+/* Ask for 720p — a 640x480 frame is thin for describing a face or a room.
+   `ideal` (not `exact`) so a camera that can't do it still opens. */
+function cameraConstraints(deviceId) {
+  const c = { width: { ideal: 1280 }, height: { ideal: 720 } };
+  if (deviceId) c.deviceId = { exact: deviceId };
+  return c;
+}
+
 /* Open ONE camera, warm it up, and return the best frame it produced plus how
    much real detail that frame held. Never leaves the stream open. */
 async function grabFromCamera(deviceId, showPreview, budgetMs) {
@@ -172,7 +180,7 @@ async function grabFromCamera(deviceId, showPreview, budgetMs) {
     // `exact` so the pick is actually honoured — `ideal` lets the browser
     // silently fall back to the very default we're trying to avoid.
     cameraStream = await navigator.mediaDevices.getUserMedia(
-      deviceId ? { video: { deviceId: { exact: deviceId } } } : { video: true });
+      { video: cameraConstraints(deviceId) });
     const video = (showPreview && $("#camera-preview-video"))
       || document.createElement("video");
     video.srcObject = cameraStream;
@@ -343,7 +351,7 @@ async function testCamera(deviceId, statusEl) {
   say("Opening the camera…");
   try {
     cameraStream = await navigator.mediaDevices.getUserMedia(
-      deviceId ? { video: { deviceId: { exact: deviceId } } } : { video: true });
+      { video: cameraConstraints(deviceId) });
   } catch (err) {
     say("⚠ Couldn't open that camera. Another app may be holding it — close "
         + "Camo / Teams / the Camera app — or access is blocked for this window.");

@@ -60,8 +60,14 @@ def ocr_status(config) -> tuple[bool, str]:
 # HARD before running. A fast pass (small, short cap) drives the sensitive
 # pre-scan; a full pass (larger, still capped) is used only when cloud vision
 # is off, since cloud describes a screen far faster and better.
+# The fast pass drives the PRIVACY scan, so it must actually FINISH: if it
+# times out we cannot tell whether the screen holds a password. Measured on
+# this machine it reads a single monitor in ~4.1s — and the cap was 4s, so it
+# was failing on the boundary. Keep the resolution (shrinking it further would
+# make the very words we hunt for, "password"/"CVV", too small to read) and
+# give the clock real headroom instead.
 FAST_OCR_PIXELS = 500_000
-FAST_OCR_TIMEOUT_S = 4
+FAST_OCR_TIMEOUT_S = 12
 FULL_OCR_PIXELS = 1_100_000
 FULL_OCR_TIMEOUT_S = 8
 # psm 6 (assume a uniform block) + oem 1 (LSTM) was the quickest that still
@@ -79,8 +85,12 @@ def _downscale_for_ocr(image, max_pixels: int):
 
 
 def extract_text(frame, config, *, fast: bool = False) -> str:
-    """OCR the frame locally. Returns "" when OCR isn't available or times out
-    — the caller degrades gracefully rather than hanging.
+    """OCR the frame locally. Returns None when OCR could NOT RUN (missing or
+    timed out), and a string (possibly empty) when it did.
+
+    That distinction matters: this pass drives the sensitive-content guard, and
+    "the scan found nothing" must never be confused with "the scan never ran" —
+    conflating them silently sends an unscanned screen to the cloud.
 
     fast=True: a small, quickly-capped pass for the sensitive-content scan.
     fast=False: a larger (still bounded) pass for a local-only description.
@@ -88,7 +98,7 @@ def extract_text(frame, config, *, fast: bool = False) -> str:
     available, reason = ocr_status(config)
     if not available:
         devlog.log(f"Vision: OCR unavailable ({reason.split(':')[0]})")
-        return ""
+        return None
     import time
     max_px = (int(getattr(config, "ocr_fast_pixels", FAST_OCR_PIXELS)) if fast
               else int(getattr(config, "ocr_max_pixels", FULL_OCR_PIXELS)))
@@ -104,10 +114,11 @@ def extract_text(frame, config, *, fast: bool = False) -> str:
         text = pytesseract.image_to_string(
             image, config=_TESS_CONFIG, timeout=timeout) or ""
     except Exception as e:
-        # pytesseract raises RuntimeError on timeout. Best-effort, never fatal.
+        # pytesseract raises RuntimeError on timeout. Never fatal — but None,
+        # not "", so the caller knows the scan did not actually run.
         devlog.warn(f"Vision: OCR {'fast ' if fast else ''}gave up "
                     f"({' '.join(str(e).split())[:80]})")
-        return ""
+        return None
     text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
     devlog.log(f"Vision: OCR read {len(text)} chars in "
                f"{time.perf_counter() - started:.1f}s "

@@ -140,6 +140,71 @@ def test_camera_without_cloud_asks_to_enable_it():
     assert "cloud vision" in result.summary.lower()
 
 
+# ---- the privacy pre-scan must not fail OPEN ------------------------------------------
+
+def test_failed_privacy_scan_does_not_send_the_screen_to_the_cloud(monkeypatch):
+    """From real logs: "OCR fast gave up (timeout)" -> the sensitive-content
+    scan returned no text -> looks_sensitive("") said "clean" -> the frame went
+    to Gemini UNSCANNED. A scan that never ran is not a scan that found nothing."""
+    from app.vision.service import VisionService
+    from tests.test_phase11b import make_frame
+    import app.vision.ocr as ocr_mod
+
+    monkeypatch.setattr(ocr_mod, "ocr_status", lambda cfg: (True, ""))
+    calls = {"cloud": 0}
+
+    def cloud(frame, q):
+        calls["cloud"] += 1
+        return "a description"
+
+    svc = VisionService(make_config(cloud_vision_consent=True),
+                        capture=lambda **k: make_frame(),
+                        ocr=lambda f, fast=False: None,   # the scan FAILED
+                        cloud=cloud)
+    result = svc.look(allow_cloud=True)
+
+    assert calls["cloud"] == 0, "an unscanned screen was sent to the cloud"
+    assert result.needs_ack
+    assert "check it for passwords" in result.ack_reason
+
+    # overriding it explicitly still works
+    result = svc.look(allow_cloud=True, allow_sensitive=True)
+    assert calls["cloud"] == 1 and not result.needs_ack
+
+
+def test_no_ocr_installed_still_allows_cloud_vision(monkeypatch):
+    """Cloud vision is documented to work without local OCR — refusing here
+    would break the feature for anyone who never installed Tesseract."""
+    from app.vision.service import VisionService
+    from tests.test_phase11b import make_frame
+    import app.vision.ocr as ocr_mod
+
+    monkeypatch.setattr(ocr_mod, "ocr_status",
+                        lambda cfg: (False, "not installed"))
+    calls = {"cloud": 0}
+
+    def cloud(frame, q):
+        calls["cloud"] += 1
+        return "a code editor"
+
+    svc = VisionService(make_config(cloud_vision_consent=True),
+                        capture=lambda **k: make_frame(),
+                        ocr=lambda f, fast=False: None,   # no OCR at all
+                        cloud=cloud)
+    result = svc.look(allow_cloud=True)
+    assert calls["cloud"] == 1 and not result.needs_ack
+    assert result.used_cloud
+
+
+def test_ocr_returns_none_when_it_could_not_run(monkeypatch):
+    """"" means 'ran, found nothing'; None means 'never ran'."""
+    from app.vision import ocr as ocr_mod
+    from tests.test_phase11b import make_frame
+
+    monkeypatch.setattr(ocr_mod, "ocr_status", lambda cfg: (False, "off"))
+    assert ocr_mod.extract_text(make_frame(), make_config()) is None
+
+
 # ---- camera: retry a blank first frame -----------------------------------------------
 
 def test_camera_retries_a_blank_frame_then_succeeds():

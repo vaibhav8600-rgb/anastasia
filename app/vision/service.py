@@ -52,12 +52,17 @@ class VisionService:
         from app.vision import ocr
         return ocr.extract_text(frame, self.config, fast=fast)
 
-    def _ocr_text(self, frame, fast: bool = False) -> str:
-        """Call the (possibly injected) OCR, tolerating a 1-arg test double."""
+    def _ocr_text(self, frame, fast: bool = False):
+        """Call the (possibly injected) OCR, tolerating a 1-arg test double.
+
+        Returns None when the scan could not run — do NOT coerce that to "",
+        or "the scan never ran" becomes indistinguishable from "the scan found
+        nothing", and an unchecked screen goes to the cloud.
+        """
         try:
-            return self._ocr(frame, fast=fast) or ""
+            return self._ocr(frame, fast=fast)
         except TypeError:
-            return self._ocr(frame) or ""
+            return self._ocr(frame)
 
     def _default_cloud(self, frame, question: str) -> str:
         from app.vision import cloud
@@ -102,10 +107,16 @@ class VisionService:
             # and slow on it, and there's no on-screen text to be a privacy
             # risk. Skip straight to cloud description (person/object/scene).
             # For a SCREEN, a fast downscaled OCR drives the privacy gate.
+            scanned = True
             if is_camera:
                 scan_text = ""
             else:
-                scan_text = self._ocr_text(frame, fast=True)
+                raw = self._ocr_text(frame, fast=True)
+                # None = the scan could NOT RUN (OCR missing or timed out).
+                # That is NOT the same as "found nothing sensitive": treating
+                # it as clean would send an unscanned screen to the cloud.
+                scanned = raw is not None
+                scan_text = raw or ""
                 sensitive, reason = looks_sensitive(scan_text)
                 if sensitive and not allow_sensitive:
                     # Refuse to analyze AT ALL — not locally, not in the cloud.
@@ -113,6 +124,26 @@ class VisionService:
                     return VisionResult(source=frame.source, scope=frame.scope,
                                         window_title=frame.window_title,
                                         needs_ack=True, ack_reason=reason)
+                if not scanned and want_cloud and not allow_sensitive:
+                    from app.vision.ocr import ocr_status
+                    if ocr_status(self.config)[0]:
+                        # OCR is installed but this scan FAILED. That's
+                        # transient — don't ship an unchecked screen to the
+                        # cloud on the strength of a scan that never ran.
+                        devlog.warn("Vision: privacy pre-scan failed — refusing "
+                                    "to send an unchecked screen to the cloud.")
+                        return VisionResult(
+                            source=frame.source, scope=frame.scope,
+                            window_title=frame.window_title, needs_ack=True,
+                            ack_reason=("I couldn't read that screen well enough "
+                                        "to check it for passwords or card "
+                                        "details first, so I didn't send it "
+                                        "anywhere"))
+                    # No OCR installed at all: the user knowingly has no local
+                    # scan (cloud vision is documented to work without it).
+                    # Proceed, but never silently — say the guard didn't run.
+                    devlog.warn("Vision: no local OCR, so NO sensitive-content "
+                                "pre-scan ran before this frame went to the cloud.")
 
             used_cloud = False
             summary = ""
