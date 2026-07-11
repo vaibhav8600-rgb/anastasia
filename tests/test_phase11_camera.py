@@ -146,36 +146,43 @@ def test_model_cannot_open_the_camera_app_while_anna_uses_the_webcam():
     for app in ("camera", "Microsoft.Windows.Camera", "webcam", "Camera app"):
         msg = engine._skip_check("open_app", {"app_name": app})
         assert msg is not None, f"open_app({app!r}) was allowed to steal the camera"
-        assert "do not open the camera app" in msg.lower()
+        assert "do not open the windows camera app" in msg.lower()
 
     # a genuine, unrelated app launch is still allowed through
     assert engine._skip_check("open_app", {"app_name": "notepad"}) is None
     assert engine._skip_check("open_app", {"app_name": "chrome"}) is None
 
 
-def test_camera_app_guard_holds_when_the_model_calls_first():
-    """RACE from real logs: open_app('camera') was LOGGED BEFORE our own
-    camera_look short-circuit, so the guard hadn't armed and the Camera app
-    launched anyway. The guard must also read the user's words."""
+def test_camera_app_guard_holds_even_before_the_transcript_arrives():
+    """RACE from real logs: open_app('camera') fired 21 SECONDS BEFORE the
+    transcript arrived, so there were no words to read and no local run to
+    check — and the Camera app seized the webcam. The guard must refuse by
+    DEFAULT, since Anna has her own camera vision."""
     engine, agent, _ = _camera_engine()
-    # the user's words have arrived, but the short-circuit hasn't fired yet
-    engine._user_buf = "Can you open the camera and tell me what you see?"
+    engine._user_buf = ""                      # nothing transcribed yet
+    engine._last_user_text = ""
     assert not engine._recent_local            # nothing run locally yet
+
     msg = engine._skip_check("open_app", {"app_name": "camera"})
     assert msg is not None, "the Camera app could still steal the webcam"
-    assert "do not open the camera app" in msg.lower()
+    assert "do not open the windows camera app" in msg.lower()
+
+    # ...and still refused once the words do arrive
+    engine._user_buf = "Can you open the camera and tell me what you see?"
+    assert engine._skip_check("open_app", {"app_name": "camera"}) is not None
 
 
-def test_open_app_camera_is_allowed_when_anna_is_not_using_the_webcam():
-    """Outside a camera look, "open the Camera app" is a normal request."""
+def test_open_app_camera_allowed_only_when_the_user_says_camera_app():
+    """The one way to actually launch Windows Camera: say "the camera app"."""
     engine, agent, _ = _camera_engine()
     engine._user_buf = ""
     engine._last_user_text = "open the camera app please"
-    # this phrasing is NOT a camera_look; the rule router says so, and the
-    # fake agent's rule always returns camera_look, so use a real router here
-    from app.agent.router import match_rule
-    agent.rule = lambda t: match_rule(t, engine.config)
     assert engine._skip_check("open_app", {"app_name": "camera"}) is None
+    # the router agrees: "camera app" launches the app, not a camera look
+    from app.agent.router import match_rule
+    plan = match_rule("open the camera app", engine.config)
+    assert plan is None or plan.tool_name != "camera_look"
+    assert match_rule("open the camera", engine.config).tool_name == "camera_look"
 
 
 # ---- a flat grey placeholder is never passed off as a photo ---------------------------

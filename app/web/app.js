@@ -163,41 +163,22 @@ function nextVideoFrame(video) {
   return new Promise(r => requestAnimationFrame(() => r()));
 }
 
-/* Open the camera, show a live self-preview, grab exactly one GOOD frame,
-   stop it. The stream never outlives this function. `device` selects a
-   specific webcam; `preview` shows the small self-view. */
-async function captureCameraFrame(requestId, device, preview) {
-  let dataUrl = "";
+/* Open ONE camera, warm it up, and return the best frame it produced plus how
+   much real detail that frame held. Never leaves the stream open. */
+async function grabFromCamera(deviceId, showPreview, budgetMs) {
   const box = $("#camera-preview");
-  const shown = preview !== false && box;
+  let best = "", bestDetail = -1;
   try {
-    // No camera chosen? Prefer a REAL webcam over a virtual one — an
-    // unconnected Camo/OBS/DroidCam device is often the system default and
-    // hands back a flat grey card.
-    const chosen = device || await pickRealCamera();
-    // `exact` so the pick is actually honoured (`ideal` lets the browser fall
-    // back to the very default we're trying to avoid). Fall back gracefully if
-    // that specific camera can't be opened.
-    if (chosen) {
-      try {
-        cameraStream = await navigator.mediaDevices.getUserMedia(
-          { video: { deviceId: { exact: chosen } } });
-      } catch (err) {
-        console.warn("camera: chosen device unavailable, using default", err);
-        cameraStream = null;
-      }
-    }
-    if (!cameraStream) {
-      cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
-    }
-    // Reuse the on-screen preview <video> as the capture source when showing
-    // the self-view, else a detached element.
-    const video = (shown && $("#camera-preview-video"))
+    // `exact` so the pick is actually honoured — `ideal` lets the browser
+    // silently fall back to the very default we're trying to avoid.
+    cameraStream = await navigator.mediaDevices.getUserMedia(
+      deviceId ? { video: { deviceId: { exact: deviceId } } } : { video: true });
+    const video = (showPreview && $("#camera-preview-video"))
       || document.createElement("video");
     video.srcObject = cameraStream;
     video.muted = true;
     video.playsInline = true;
-    if (shown) box.classList.remove("hidden");
+    if (showPreview && box) box.classList.remove("hidden");
     await video.play();
     if (video.readyState < 2) {
       await new Promise(r => (video.onloadeddata = r));
@@ -207,13 +188,12 @@ async function captureCameraFrame(requestId, device, preview) {
     canvas.height = video.videoHeight || 480;
     const ctx = canvas.getContext("2d");
 
-    // Webcams emit a black or grey frame for the first 1-3s while exposure
-    // ramps. Keep pulling frames until one holds REAL detail, and hang on to
-    // the best frame seen — so even if it never fully wakes we send the most
-    // informative frame we got, not the greyest.
-    await sleep(350);
-    const deadline = Date.now() + 8000;
-    let best = "", bestDetail = -1;
+    // Webcams emit black or grey for the first 1-3s while exposure ramps. Keep
+    // pulling frames until one holds REAL detail, and hang on to the best one
+    // seen — so a camera that never wakes still yields its most informative
+    // frame rather than the greyest.
+    await sleep(300);
+    const deadline = Date.now() + budgetMs;
     do {
       await nextVideoFrame(video);
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -225,22 +205,56 @@ async function captureCameraFrame(requestId, device, preview) {
       if (detail >= MIN_DETAIL) break;      // a real view of the world
       await sleep(120);
     } while (Date.now() < deadline);
-
-    dataUrl = best;
-    if (bestDetail < MIN_DETAIL) {
-      console.warn("camera: no detailed frame (best detail", bestDetail, ")");
-    }
-    // Linger so you actually SEE the self-view, then tear it down.
-    if (shown) await sleep(2000);
     video.pause();
-    if (!shown) video.srcObject = null;
+    if (!showPreview) video.srcObject = null;
+  } catch (err) {
+    console.warn("camera: couldn't use", deviceId || "default", err);
+  } finally {
+    stopCameraTracks();          // ALWAYS — even if the draw threw
+  }
+  return { dataUrl: best, detail: bestDetail };
+}
+
+/* Grab one good frame. If the camera hands back a grey card (an unconnected
+   Camo/OBS device, a covered lens, or one another app has seized), try the
+   next camera rather than giving up — and remember whichever one works. */
+async function captureCameraFrame(requestId, device, preview) {
+  const box = $("#camera-preview");
+  const shown = preview !== false && !!box;
+  let best = "", bestDetail = -1, winner = "";
+  try {
+    let ids;
+    if (device) {
+      ids = [device];                       // the user's explicit choice, only
+    } else if (resolvedCameraId) {
+      ids = [resolvedCameraId];             // one we already know works
+    } else {
+      const cams = await cameraCandidates();   // real webcams before virtual
+      ids = cams.length ? cams.map(c => c.deviceId) : [""];
+    }
+    const overall = Date.now() + 18000;
+    for (const id of ids) {
+      const budget = ids.length > 1 ? 4500 : 8000;
+      const got = await grabFromCamera(id, shown, budget);
+      if (got.detail > bestDetail) {
+        bestDetail = got.detail;
+        best = got.dataUrl;
+        winner = id;
+      }
+      if (got.detail >= MIN_DETAIL) break;       // a real picture — done
+      console.warn("camera:", id || "default", "gave a featureless frame (detail",
+                   Math.round(got.detail), ") — trying the next camera");
+      if (Date.now() > overall) break;
+    }
+    if (bestDetail >= MIN_DETAIL && !device) resolvedCameraId = winner;
+    if (shown && box && best) await sleep(1500);   // let them see the self-view
   } catch (err) {
     console.error("camera capture failed", err);
   } finally {
     if (box) box.classList.add("hidden");
-    stopCameraTracks();          // ALWAYS — even if the draw threw
+    stopCameraTracks();
   }
-  call("camera_frame", requestId, dataUrl);
+  call("camera_frame", requestId, best);
 }
 
 /* Virtual "cameras" that show a grey placeholder when their phone/app isn't
@@ -255,17 +269,16 @@ function isVirtualCam(label) {
   return VIRTUAL_CAM_HINTS.some(h => l.includes(h));
 }
 
-let resolvedCameraId = null;   // cached pick — don't re-probe every capture
+let resolvedCameraId = "";   // a camera we've confirmed actually shows something
 
-/* Pick a real webcam when the user hasn't chosen one.
+/* Every camera, REAL ones first, virtual ones last.
 
    Device LABELS are hidden until camera permission has been granted at least
    once — so on a cold start every camera is nameless and we cannot tell a real
-   webcam from a virtual one. That's the chicken-and-egg that kept selecting an
-   unconnected Camo (grey card). Open any camera briefly to unlock the labels,
-   then choose properly. */
-async function pickRealCamera() {
-  if (resolvedCameraId !== null) return resolvedCameraId;
+   webcam from a virtual one. That chicken-and-egg is why an unconnected Camo
+   (grey card) kept winning. Open any camera briefly to unlock the labels, then
+   order them properly. */
+async function cameraCandidates() {
   let cams = [];
   try {
     let devices = await navigator.mediaDevices.enumerateDevices();
@@ -277,13 +290,13 @@ async function pickRealCamera() {
       cams = devices.filter(d => d.kind === "videoinput");
     }
   } catch (err) {
-    resolvedCameraId = "";
-    return "";
+    return [];
   }
-  const real = cams.find(c => c.label && !isVirtualCam(c.label));
-  resolvedCameraId = real ? real.deviceId : "";
-  if (real) console.log("camera: using", real.label);
-  return resolvedCameraId;
+  const real = cams.filter(c => !isVirtualCam(c.label));
+  const virtual = cams.filter(c => isVirtualCam(c.label));
+  console.log("camera: candidates",
+              [...real, ...virtual].map(c => c.label || "(unnamed)"));
+  return [...real, ...virtual];
 }
 
 /* Populate the Settings camera dropdown. Labels are only visible after camera
@@ -676,9 +689,13 @@ function settingsHtml(s) {
     <div class="form-row"><label>Cloud vision model (preview tier — may change)</label>
       <input id="set-vision_cloud_model" value="${esc(s.vision_cloud_model || "")}"></div>
     <div class="form-row"><label>Camera</label>
-      <select id="set-camera_device"><option value="">Default camera</option></select></div>
-    <p class="settings-hint">Camera names appear after you've used the camera
-      once (a browser privacy rule).</p>
+      <select id="set-camera_device"><option value="">Automatic</option></select></div>
+    <button class="ghost-btn" id="test-camera">📷 Test this camera</button>
+    <p class="settings-hint">Pick a camera and test it — you'll see yourself in
+      the corner. If it's grey or blank, that camera isn't giving a real picture
+      (a virtual camera like Camo shows grey unless its phone is connected);
+      choose a different one. On "Automatic", Anna tries your real webcams first
+      and skips any camera that only returns a blank image.</p>
     <div class="form-row" style="flex-direction:row;align-items:center;gap:10px">
       <input type="checkbox" id="set-camera_preview"
              ${s.camera_preview !== false ? "checked" : ""} style="width:auto">
@@ -1074,6 +1091,27 @@ const handlers = {
   settings: (p) => {
     openModal("Settings", settingsHtml(p));
     loadCameraDevices(p.camera_device || "");   // 11B: list webcams
+    // Test the selected camera and SHOW the result — no guessing which one works.
+    $("#test-camera").addEventListener("click", async () => {
+      const id = $("#set-camera_device")?.value || "";
+      const status = $("#settings-status");
+      const box = $("#camera-preview");
+      if (status) status.textContent = "Opening the camera…";
+      const got = await grabFromCamera(id, true, 7000);
+      if (box) { await sleep(2500); box.classList.add("hidden"); }
+      if (!status) return;
+      if (got.detail >= MIN_DETAIL) {
+        status.textContent = "✅ That camera works — you should have seen "
+          + "yourself in the corner. Save to keep it.";
+      } else if (got.detail < 0) {
+        status.textContent = "⚠ Couldn't open that camera. It may be in use by "
+          + "another app (close Camo / Teams / the Camera app) or blocked.";
+      } else {
+        status.textContent = "⚠ That camera only gives a blank/grey picture. "
+          + "Pick a different one — a virtual camera (Camo, OBS) shows grey "
+          + "unless its phone/source is connected.";
+      }
+    });
     $("#settings-save").addEventListener("click", () => {
       call("save_settings", collectSettings());
       closeModal();

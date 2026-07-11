@@ -17,6 +17,7 @@ only execution channel, and they all pass through app/agent/safety.py.
 """
 
 import queue
+import re
 import threading
 import time
 
@@ -441,23 +442,23 @@ class LiveEngine:
             "what you see — the person, objects and setting — warmly and "
             "briefly. Don't try to name or identify anyone.")
 
-    def _wants_camera_look(self) -> bool:
-        """Is this turn a 'look through the camera' request? Checked from the
-        user's own words as well as the recent local run, because the model's
-        tool call can BEAT our short-circuit (it did: open_app logged before
-        camera_look, so the guard hadn't armed and the Camera app launched)."""
-        recent = self._recent_local
-        if recent and recent[0] == "camera_look" \
-                and time.monotonic() - recent[1] < RULE_DEDUP_WINDOW_S:
-            return True
-        text = (self._user_buf or "").strip() or self._last_user_text
-        if not text:
-            return False
-        try:
-            plan = self.agent.plan_rule(text)
-        except Exception:
-            return False
-        return plan is not None and plan.tool_name == "camera_look"
+    def _refuse_camera_app(self) -> bool:
+        """Should open_app('camera') be refused? DEFAULT: yes.
+
+        Anna has her own camera vision. The model reflexively fires
+        open_app('camera') whenever the user asks her to LOOK — and the Windows
+        Camera app then SEIZES the webcam, so Anna's own capture comes back a
+        grey card. We cannot decide this from the transcript, because the tool
+        call routinely arrives BEFORE it (in one run, 21 seconds before).
+
+        So we refuse unless the user explicitly asked for the camera APP. The
+        cost of refusing wrongly is one repeated sentence; the cost of allowing
+        wrongly is that camera vision is broken every time.
+        """
+        text = f"{self._user_buf or ''} {self._last_user_text or ''}".lower()
+        if re.search(r"\b(camera|webcam)\s+app\b", text):
+            return False        # they really do want the Windows Camera app
+        return True
 
     def _skip_check(self, name: str, args: dict):
         """Bridge hook: dedup a model tool call that repeats what the local
@@ -473,12 +474,14 @@ class LiveEngine:
             app = str((args or {}).get("app_name") or (args or {}).get("name")
                       or (args or {}).get("app") or "").lower()
             if any(word in app for word in ("camera", "webcam")) \
-                    and self._wants_camera_look():
-                devlog.log("[gemini_live] refused open_app(camera) — Anna is "
-                           "already using the webcam directly.")
-                return ("Anna looks through the webcam HERSELF — do not open the "
-                        "Camera app, it would take the camera away from her and "
-                        "she'd only see a blank image. She already has the photo.")
+                    and self._refuse_camera_app():
+                devlog.log("[gemini_live] refused open_app(camera) — Anna uses "
+                           "the webcam directly; the Camera app would seize it.")
+                return ("Do NOT open the Windows Camera app — it would seize the "
+                        "webcam and Anna would only get a blank grey image. Anna "
+                        "looks through the camera HERSELF; use camera_look (or "
+                        "she has already taken the photo). Only open the Camera "
+                        "app if the user literally says “the camera app”.")
 
         recent = self._recent_local
         if not recent or time.monotonic() - recent[1] >= RULE_DEDUP_WINDOW_S:
