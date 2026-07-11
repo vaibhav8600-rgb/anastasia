@@ -22,6 +22,44 @@ _TITLE_HINTS = {
 }
 
 
+# Generic words for "a browser" -> the browser that's actually open.
+_BROWSER_WORDS = {"browser", "the browser", "web browser", "my browser",
+                  "internet", "internet browser"}
+_KNOWN_BROWSERS = ("chrome", "edge", "firefox", "brave", "opera")
+
+
+def normalize_window_app(app: str, config) -> str:
+    """Resolve a generic 'browser' to a concrete, approved browser, and map
+    common spoken/model synonyms ('code' -> vscode) to their alias key.
+    Non-alias names pass through unchanged so 'python'/'anastasia' still hit
+    the own-window / alias guards."""
+    app = (app or "").lower().strip()
+    # Synonym map (same source the router uses): 'code' -> 'vscode', etc.
+    from app.agent.router import APP_SYNONYMS, _norm
+    canon = APP_SYNONYMS.get(_norm(app))
+    if canon and canon in {key.lower() for key in getattr(config, "app_aliases", {})}:
+        return canon
+    if app not in _BROWSER_WORDS:
+        return app
+    default = (getattr(config, "default_browser", "") or "").lower().strip()
+    if default:
+        return default
+    aliases = {key.lower() for key in getattr(config, "app_aliases", {})}
+    try:
+        import pygetwindow
+        titles = " ".join(str(getattr(w, "title", "") or "").lower()
+                          for w in pygetwindow.getAllWindows())
+        for browser in _KNOWN_BROWSERS:
+            if browser in titles and browser in aliases:
+                return browser
+    except Exception:
+        pass
+    for browser in _KNOWN_BROWSERS:
+        if browser in aliases:
+            return browser
+    return app          # no browser configured -> let the alias guard refuse it
+
+
 def _active_title() -> str:
     try:
         import pygetwindow
@@ -63,6 +101,7 @@ def window_control(args: dict, ctx: ToolContext) -> ToolResult:
     if action not in _ACTIONS:
         return ToolResult(False, f"I can close, minimize or maximize — not '{action}'.")
     app = str(args.get("app") or args.get("app_name") or args.get("target") or "").lower().strip()
+    app = normalize_window_app(app, ctx.config)   # 'the browser' -> chrome/edge
 
     # A bare "close" with no named app would Alt+F4 whatever is focused — which
     # is usually Anna herself or the terminal. Require an explicit target for

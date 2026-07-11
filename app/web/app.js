@@ -116,6 +116,287 @@ function renderEntry(p, role) {
   appendMessage(annaMessageHtml(p), "anna");
 }
 
+/* --------------------------------------------------- camera (11B, Mira) */
+let cameraStream = null;
+
+function stopCameraTracks() {
+  if (!cameraStream) return;
+  cameraStream.getTracks().forEach(t => t.stop());   // camera light goes out
+  cameraStream = null;
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+/* True when the canvas holds a single flat colour — a webcam that hasn't
+   warmed up yet returns pure black, and drawing the very first available
+   frame reliably captures exactly that. Sample a small grid; we only need to
+   know whether *anything* varies. */
+/* How much real detail a frame holds (luminance standard deviation).
+
+   A live view of a room is busy (typically 30+). A warming-up sensor or an
+   unconnected virtual camera hands back a grey card with almost none. The old
+   check only rejected a PERFECTLY flat frame, so it happily grabbed the grey
+   warm-up frame the moment it had the faintest gradient. */
+function canvasDetail(canvas) {
+  const probe = document.createElement("canvas");
+  probe.width = probe.height = 32;
+  const pctx = probe.getContext("2d");
+  pctx.drawImage(canvas, 0, 0, 32, 32);
+  const px = pctx.getImageData(0, 0, 32, 32).data;
+  const lums = [];
+  for (let i = 0; i < px.length; i += 4) {
+    lums.push((px[i] + px[i + 1] + px[i + 2]) / 3);
+  }
+  const mean = lums.reduce((a, b) => a + b, 0) / lums.length;
+  const varr = lums.reduce((a, b) => a + (b - mean) ** 2, 0) / lums.length;
+  return Math.sqrt(varr);
+}
+
+const MIN_DETAIL = 12;   // below this it's a grey card, not a view of the world
+
+/* Wait for a frame the compositor has actually decoded, not just "metadata
+   is ready". requestVideoFrameCallback fires on a real presented frame. */
+function nextVideoFrame(video) {
+  if (typeof video.requestVideoFrameCallback === "function") {
+    return new Promise(r => video.requestVideoFrameCallback(() => r()));
+  }
+  return new Promise(r => requestAnimationFrame(() => r()));
+}
+
+/* Ask for 720p — a 640x480 frame is thin for describing a face or a room.
+   `ideal` (not `exact`) so a camera that can't do it still opens. */
+function cameraConstraints(deviceId) {
+  const c = { width: { ideal: 1280 }, height: { ideal: 720 } };
+  if (deviceId) c.deviceId = { exact: deviceId };
+  return c;
+}
+
+/* Open ONE camera, warm it up, and return the best frame it produced plus how
+   much real detail that frame held. Never leaves the stream open. */
+async function grabFromCamera(deviceId, showPreview, budgetMs) {
+  const box = $("#camera-preview");
+  let best = "", bestDetail = -1;
+  try {
+    // `exact` so the pick is actually honoured — `ideal` lets the browser
+    // silently fall back to the very default we're trying to avoid.
+    cameraStream = await navigator.mediaDevices.getUserMedia(
+      { video: cameraConstraints(deviceId) });
+    const video = (showPreview && $("#camera-preview-video"))
+      || document.createElement("video");
+    video.srcObject = cameraStream;
+    video.muted = true;
+    video.playsInline = true;
+    if (showPreview && box) box.classList.remove("hidden");
+    await video.play();
+    if (video.readyState < 2) {
+      await new Promise(r => (video.onloadeddata = r));
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 480;
+    const ctx = canvas.getContext("2d");
+
+    // Webcams emit black or grey for the first 1-3s while exposure ramps. Keep
+    // pulling frames until one holds REAL detail, and hang on to the best one
+    // seen — so a camera that never wakes still yields its most informative
+    // frame rather than the greyest.
+    await sleep(300);
+    const deadline = Date.now() + budgetMs;
+    do {
+      await nextVideoFrame(video);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const detail = canvasDetail(canvas);
+      if (detail > bestDetail) {
+        bestDetail = detail;
+        best = canvas.toDataURL("image/jpeg", 0.85);
+      }
+      if (detail >= MIN_DETAIL) break;      // a real view of the world
+      await sleep(120);
+    } while (Date.now() < deadline);
+    video.pause();
+    if (!showPreview) video.srcObject = null;
+  } catch (err) {
+    console.warn("camera: couldn't use", deviceId || "default", err);
+  } finally {
+    stopCameraTracks();          // ALWAYS — even if the draw threw
+  }
+  return { dataUrl: best, detail: bestDetail };
+}
+
+/* Grab one good frame. If the camera hands back a grey card (an unconnected
+   Camo/OBS device, a covered lens, or one another app has seized), try the
+   next camera rather than giving up — and remember whichever one works. */
+async function captureCameraFrame(requestId, device, preview) {
+  const box = $("#camera-preview");
+  const shown = preview !== false && !!box;
+  let best = "", bestDetail = -1, winner = "";
+  try {
+    let ids;
+    if (device) {
+      ids = [device];                       // the user's explicit choice, only
+    } else if (resolvedCameraId) {
+      ids = [resolvedCameraId];             // one we already know works
+    } else {
+      const cams = await cameraCandidates();   // real webcams before virtual
+      ids = cams.length ? cams.map(c => c.deviceId) : [""];
+    }
+    // Cameras genuinely need seconds to ramp exposure. Give a single (pinned)
+    // camera a long look; when scanning several, budget less per camera.
+    const overall = Date.now() + 22000;
+    for (const id of ids) {
+      const budget = ids.length > 1 ? 5000 : 11000;
+      const got = await grabFromCamera(id, shown, budget);
+      if (got.detail > bestDetail) {
+        bestDetail = got.detail;
+        best = got.dataUrl;
+        winner = id;
+      }
+      if (got.detail >= MIN_DETAIL) break;       // a real picture — done
+      console.warn("camera:", id || "default", "gave a featureless frame (detail",
+                   Math.round(got.detail), ") — trying the next camera");
+      if (Date.now() > overall) break;
+    }
+    if (bestDetail >= MIN_DETAIL && !device) resolvedCameraId = winner;
+    if (shown && box && best) await sleep(1500);   // let them see the self-view
+  } catch (err) {
+    console.error("camera capture failed", err);
+  } finally {
+    if (box) box.classList.add("hidden");
+    stopCameraTracks();
+  }
+  call("camera_frame", requestId, best);
+}
+
+/* Virtual "cameras" that show a grey placeholder when their phone/app isn't
+   connected — and are often the Windows default, which is why the capture came
+   back blank. Never auto-pick one; the user can still choose it explicitly. */
+const VIRTUAL_CAM_HINTS = ["camo", "virtual", "obs", "droidcam", "iriun",
+                           "manycam", "xsplit", "snap camera", "epoccam",
+                           "ivcam", "splitcam"];
+
+function isVirtualCam(label) {
+  const l = (label || "").toLowerCase();
+  return VIRTUAL_CAM_HINTS.some(h => l.includes(h));
+}
+
+let resolvedCameraId = "";   // a camera we've confirmed actually shows something
+
+/* Every camera, REAL ones first, virtual ones last.
+
+   Device LABELS are hidden until camera permission has been granted at least
+   once — so on a cold start every camera is nameless and we cannot tell a real
+   webcam from a virtual one. That chicken-and-egg is why an unconnected Camo
+   (grey card) kept winning. Open any camera briefly to unlock the labels, then
+   order them properly. */
+async function cameraCandidates() {
+  let cams = [];
+  try {
+    let devices = await navigator.mediaDevices.enumerateDevices();
+    cams = devices.filter(d => d.kind === "videoinput");
+    if (cams.length && !cams.some(c => c.label)) {
+      const probe = await navigator.mediaDevices.getUserMedia({ video: true });
+      probe.getTracks().forEach(t => t.stop());     // unlock labels, free device
+      devices = await navigator.mediaDevices.enumerateDevices();
+      cams = devices.filter(d => d.kind === "videoinput");
+    }
+  } catch (err) {
+    return [];
+  }
+  const real = cams.filter(c => !isVirtualCam(c.label));
+  const virtual = cams.filter(c => isVirtualCam(c.label));
+  console.log("camera: candidates",
+              [...real, ...virtual].map(c => c.label || "(unnamed)"));
+  return [...real, ...virtual];
+}
+
+/* Populate the Settings camera dropdown with REAL names.
+
+   Goes through cameraCandidates(), which unlocks the device labels first —
+   enumerating without that gives nameless "Camera 1" entries, because browsers
+   hide camera names until permission has been granted at least once. */
+async function loadCameraDevices(selected) {
+  const sel = $("#set-camera_device");
+  if (!sel || !navigator.mediaDevices?.enumerateDevices) return;
+  sel.innerHTML = `<option value="">Finding your cameras…</option>`;
+  const cams = await cameraCandidates();
+  const opts = [`<option value="">Automatic (tries your real webcams first)</option>`];
+  cams.forEach((c, i) => {
+    let label = c.label || `Camera ${i + 1}`;
+    if (isVirtualCam(label)) label += " — virtual, often blank";
+    const on = c.deviceId === selected ? "selected" : "";
+    opts.push(`<option value="${esc(c.deviceId)}" ${on}>${esc(label)}</option>`);
+  });
+  if (!cams.length) {
+    opts.push(`<option value="" disabled>No camera found — is one connected?</option>`);
+  }
+  sel.innerHTML = opts.join("");
+}
+
+/* Test a camera and KEEP A LIVE PREVIEW UP while it wakes.
+
+   Cameras can take several seconds to ramp exposure, so the old test (grab a
+   frame, close) shut the preview before you ever saw yourself. This keeps the
+   feed on screen, reports live what the camera is actually giving, and only
+   gives up after a real wait. */
+let cancelCameraTest = null;
+
+async function testCamera(deviceId, statusEl) {
+  const box = $("#camera-preview");
+  const video = $("#camera-preview-video");
+  if (cancelCameraTest) cancelCameraTest();      // supersede a running test
+  let cancelled = false;
+  cancelCameraTest = () => { cancelled = true; };
+  const say = (t) => { if (statusEl) statusEl.textContent = t; };
+
+  say("Opening the camera…");
+  try {
+    cameraStream = await navigator.mediaDevices.getUserMedia(
+      { video: cameraConstraints(deviceId) });
+  } catch (err) {
+    say("⚠ Couldn't open that camera. Another app may be holding it — close "
+        + "Camo / Teams / the Camera app — or access is blocked for this window.");
+    cancelCameraTest = null;
+    return;
+  }
+  video.srcObject = cameraStream;
+  video.muted = true;
+  video.playsInline = true;
+  if (box) box.classList.remove("hidden");
+  try { await video.play(); } catch (err) { /* autoplay quirk; frames still come */ }
+
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  const deadline = Date.now() + 20000;          // real time for a slow camera
+  let bestDetail = -1, goodSince = 0;
+  while (!cancelled && Date.now() < deadline) {
+    await sleep(400);
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 480;
+    try { ctx.drawImage(video, 0, 0, canvas.width, canvas.height); } catch (e) { continue; }
+    const detail = canvasDetail(canvas);
+    if (detail > bestDetail) bestDetail = detail;
+    if (detail >= MIN_DETAIL) {
+      if (!goodSince) goodSince = Date.now();
+      say("✅ This camera works — that's you in the corner. Click Save to keep it.");
+      if (Date.now() - goodSince > 5000) break;   // you've had a good look
+    } else {
+      const left = Math.ceil((deadline - Date.now()) / 1000);
+      say(`Warming up — still blank (${left}s left). Some cameras take a while. `
+          + "Click the preview to stop.");
+    }
+  }
+  if (!cancelled && bestDetail < MIN_DETAIL) {
+    say("⚠ This camera only ever gave a blank/grey picture. Pick a different "
+        + "one — a virtual camera (Camo, OBS) shows grey unless its phone or "
+        + "source is connected.");
+  }
+  stopCameraTracks();
+  if (box) box.classList.add("hidden");
+  cancelCameraTest = null;
+}
+
+let lastConfirm = null;   // payload of the card currently on screen (11A)
+
 function confirmCardHtml(p) {
   const args = JSON.stringify(p.arguments || {});
   if (p.kind === "fuzzy") return `<div class="confirm-card fuzzy" data-confirm-id="${esc(p.id)}">
@@ -126,16 +407,60 @@ function confirmCardHtml(p) {
               <button class="ghost-btn" data-confirm="${esc(p.id)}" data-approved="0">No</button>
             </div>
           </div>`;
-  return `<div class="confirm-card" data-confirm-id="${esc(p.id)}">
+  // 11A: destructive-tier actions need the strong phrase; say so plainly.
+  const phrase = p.strong_required
+    ? `Say <b>“Anna approve”</b> or <b>“cancel”</b> — a plain “yes” won't do for this one.`
+    : `You can also say <b>“approve”</b> or <b>“cancel”</b>.`;
+  // 11C: name exactly what will be clicked, and show a picture of it when the
+  // target was only guessed from pixels.
+  const t = p.target;
+  const targetHtml = !t ? "" : `
+    <div class="confirm-target">
+      <b>${esc(t.control_type || "control")} “${esc(t.name || "?")}”</b>
+      <span class="dim">· ${esc(t.window_title || t.app || "foreground")}
+      · via ${esc(t.backend)} · ${Math.round((t.confidence ?? 1) * 100)}% sure</span>
+      ${t.confidence < 1 ? `<div class="confirm-guess">⚠ I had to guess this
+         from what I can see. Check the picture below.</div>` : ""}
+      ${t.crop_data_url ? `<img class="confirm-crop" src="${t.crop_data_url}" alt="target">` : ""}
+    </div>`;
+  return `<div class="confirm-card${p.strong_required ? " strong" : ""}" data-confirm-id="${esc(p.id)}">
             <h4>⚠ Approval required <span class="dim">· risk: ${esc(p.risk || "?")}</span></h4>
             <code>${esc(p.tool)} ${esc(args)}</code>
+            ${targetHtml}
             <div class="confirm-msg">${esc(p.message || "Do you want me to go ahead?")}</div>
+            <div class="confirm-hint">${phrase}</div>
+            <div class="confirm-details hidden"></div>
             <div class="confirm-actions">
               <button class="ghost-btn approve" data-confirm="${esc(p.id)}" data-approved="1"
                       style="border-color:rgba(52,211,153,.5);color:#a7f3d0">Run it</button>
               <button class="ghost-btn" data-confirm="${esc(p.id)}" data-approved="0">Cancel</button>
+              <button class="ghost-btn details-btn" data-details="${esc(p.id)}">Show details</button>
             </div>
           </div>`;
+}
+
+/* 11A: expand a pending card with the full target/argument detail. Called by
+   the "Show details" button and by the voice phrase "show details". */
+function expandConfirmDetails(p) {
+  const card = document.querySelector(
+    `.confirm-card[data-confirm-id="${CSS.escape(String(p.id))}"]`);
+  if (!card) return;
+  const box = card.querySelector(".confirm-details");
+  if (!box) return;
+  const rows = Object.entries(p.arguments || {})
+    .map(([k, v]) => `<tr><td class="dim">${esc(k)}</td><td>${esc(String(v))}</td></tr>`)
+    .join("");
+  const extra = Object.entries((p.details || {}))
+    .map(([k, v]) => `<tr><td class="dim">${esc(k)}</td><td>${esc(String(v))}</td></tr>`)
+    .join("");
+  box.innerHTML = `
+    <table>
+      <tr><td class="dim">heard</td><td>${esc(p.transcript || "")}</td></tr>
+      <tr><td class="dim">tool</td><td>${esc(p.tool || "")}</td></tr>
+      <tr><td class="dim">risk</td><td>${esc(p.risk || "?")}</td></tr>
+      ${rows}${extra}
+    </table>`;
+  box.classList.remove("hidden");
 }
 
 /* --------------------------------------------------------------- devlog */
@@ -414,6 +739,64 @@ function settingsHtml(s) {
         no cloud round-trip.</label>
     </div>
 
+    <h4 class="settings-section">Vision (screen &amp; camera)</h4>
+    <ul class="settings-hint" style="margin:0 0 10px 18px">
+      <li>Anna never watches silently. A single frame is captured only when you
+          ask ("look at my screen", "read this error", "what do you see").</li>
+      <li>"Watch my screen" takes <b>one frame every couple of seconds</b> —
+          each read once and thrown away. It is never a video stream, shows a
+          badge the whole time, and stops itself when idle.</li>
+      <li>The camera opens for <b>exactly one frame</b>, then stops. No
+          recording, no face recognition.</li>
+      <li>Say <b>"privacy mode"</b> to stop screen watching, the camera, and any
+          Live audio session at once.</li>
+      <li>Screens that look like they hold passwords, keys or banking details
+          are <b>not analyzed at all</b> until you explicitly allow it.</li>
+    </ul>
+    <p class="settings-hint" style="color:${s.ocr_ready ? "var(--success)" : "var(--warn)"}">
+      ${s.ocr_ready ? "✅ Local OCR ready — Anna reads screen text on this PC."
+        : "⚠ No local OCR. Install Tesseract (winget install UB-Mannheim.TesseractOCR, then pip install pytesseract) so Anna can read text without any cloud."}</p>
+    <div class="form-row" style="flex-direction:row;align-items:center;gap:10px">
+      <input type="checkbox" id="set-cloud_vision_consent"
+             ${s.cloud_vision_consent ? "checked" : ""} style="width:auto">
+      <label for="set-cloud_vision_consent" style="margin:0">
+        Allow screen/camera <b>frames to be sent to Gemini</b> for a deeper
+        description. Off = local OCR only, images never leave this PC.</label>
+    </div>
+    <div class="form-row"><label>Cloud vision model (preview tier — may change)</label>
+      <input id="set-vision_cloud_model" value="${esc(s.vision_cloud_model || "")}"></div>
+    <div class="form-row"><label>Camera</label>
+      <select id="set-camera_device"><option value="">Automatic</option></select></div>
+    <button class="ghost-btn" id="test-camera">📷 Test this camera</button>
+    <p class="settings-hint">Pick a camera and test it — the live preview stays
+      on screen while the camera wakes up (some take several seconds), and the
+      line below tells you whether it's actually working. Click the preview to
+      stop it early. A virtual camera (Camo, OBS) shows grey unless its phone or
+      source is connected — pick a real webcam instead. On "Automatic", Anna
+      tries your real webcams first and skips any that only returns a blank
+      image.</p>
+    <div class="form-row" style="flex-direction:row;align-items:center;gap:10px">
+      <input type="checkbox" id="set-camera_preview"
+             ${s.camera_preview !== false ? "checked" : ""} style="width:auto">
+      <label for="set-camera_preview" style="margin:0">
+        Show a live self-view while the camera is on, so you can see what it
+        captures.</label>
+    </div>
+    <div class="form-row"><label>Watching mode: seconds between frames</label>
+      <input id="set-screen_watch_interval_s" type="number" step="0.5" min="0.5" max="30"
+             value="${esc(s.screen_watch_interval_s ?? 1.5)}"></div>
+    <div class="form-row"><label>Watching mode: auto-stop after idle (seconds)</label>
+      <input id="set-screen_watch_idle_timeout_s" type="number" min="10" max="3600"
+             value="${esc(s.screen_watch_idle_timeout_s ?? 120)}"></div>
+    <div class="form-row" style="flex-direction:row;align-items:center;gap:10px">
+      <input type="checkbox" id="set-vision_save_captures"
+             ${s.vision_save_captures ? "checked" : ""} style="width:auto">
+      <label for="set-vision_save_captures" style="margin:0">
+        Save every capture to disk. Off = frames are processed once and
+        discarded (only the extracted text is kept).</label>
+    </div>
+    <button class="ghost-btn" id="privacy-mode-btn">🔒 Privacy mode — stop all capture now</button>
+
     <h4 class="settings-section">Cloud brain</h4>
     <div class="form-row"><label>Cloud brain (faster, needs internet)</label>
       ${selectHtml("brain_mode", s.brain_mode, ["hybrid", "local_only"])}</div>
@@ -588,6 +971,13 @@ function collectSettings() {
     hands_free_followup: !!$("#set-hands_free_followup")?.checked,
     // key only travels when the user actually typed one (never the mask)
     ...(val("groq_api_key") ? { groq_api_key: val("groq_api_key") } : {}),
+    cloud_vision_consent: !!$("#set-cloud_vision_consent")?.checked,
+    vision_cloud_model: val("vision_cloud_model"),
+    camera_device: val("camera_device") || "",
+    camera_preview: !!$("#set-camera_preview")?.checked,
+    screen_watch_interval_s: parseFloat(val("screen_watch_interval_s")) || 1.5,
+    screen_watch_idle_timeout_s: parseFloat(val("screen_watch_idle_timeout_s")) || 120,
+    vision_save_captures: !!$("#set-vision_save_captures")?.checked,
     engine_mode: val("engine_mode"),
     gemini_live_model: val("gemini_live_model"),
     gemini_live_voice: val("gemini_live_voice"),
@@ -627,8 +1017,17 @@ const handlers = {
   anna_message: (p) => renderEntry(p, "anna"),
   action_result: (p) => renderEntry(p, "anna"),
 
-  confirm_request: (p) => appendMessage(confirmCardHtml(p), "anna"),
+  confirm_request: (p) => {
+    lastConfirm = p;
+    appendMessage(confirmCardHtml(p), "anna");
+  },
+  // 11A: "show details" (voice) expands the same card the button expands.
+  confirm_details: (p) => {
+    lastConfirm = p;
+    expandConfirmDetails(p);
+  },
   confirm_resolved: () => {
+    lastConfirm = null;
     document.querySelectorAll(".confirm-card:not(.resolved)")
       .forEach(c => c.classList.add("resolved"));
   },
@@ -667,6 +1066,35 @@ const handlers = {
       if (!on) badge.textContent = "● Live — audio streaming to Google";
     }
   },
+
+  // 11B: persistent indicators. Screen watching = cyan badge + border for
+  // its whole life. Camera = red badge, on for exactly one frame.
+  screen_vision: (p) => {
+    const on = !!(p && p.active);
+    document.body.classList.toggle("screen-vision", on);
+    const badge = $("#screen-vision-badge");
+    if (badge) badge.classList.toggle("hidden", !on);
+  },
+
+  camera_active: (p) => {
+    const on = !!(p && p.active);
+    document.body.classList.toggle("camera-on", on);
+    const badge = $("#camera-badge");
+    if (badge) badge.classList.toggle("hidden", !on);
+  },
+
+  privacy_mode: () => {
+    document.body.classList.remove("screen-vision", "camera-on", "live-streaming");
+    ["#screen-vision-badge", "#camera-badge", "#live-badge"]
+      .forEach(sel => $(sel) && $(sel).classList.add("hidden"));
+    stopCameraTracks();
+  },
+
+  // Mira's pattern: open getUserMedia, draw ONE frame, stop every track
+  // immediately. No recording, nothing retained.
+  camera_capture: (p) => captureCameraFrame(p && p.id, p && p.device,
+                                            p && p.preview),
+  camera_stop: () => stopCameraTracks(),
 
   // 10D.2: running session cost estimate in the Live badge + dev tools.
   live_cost: (p) => {
@@ -741,8 +1169,18 @@ const handlers = {
   history: (p) => openModal("Command history", historyHtml(p.rows)),
   settings: (p) => {
     openModal("Settings", settingsHtml(p));
+    loadCameraDevices(p.camera_device || "");   // 11B: list webcams
+    // Test the selected camera with a LIVE preview that stays up while it wakes.
+    $("#test-camera").addEventListener("click", () => {
+      testCamera($("#set-camera_device")?.value || "", $("#settings-status"));
+    });
     $("#settings-save").addEventListener("click", () => {
       call("save_settings", collectSettings());
+      closeModal();
+    });
+    // 11B kill switch — must work without saving anything first.
+    $("#privacy-mode-btn").addEventListener("click", () => {
+      call("privacy_mode");
       closeModal();
     });
     // Test buttons save the current form first so tests use what you typed.
@@ -800,6 +1238,7 @@ const handlers = {
     }
     messagesEl().innerHTML = "";
     (p.conversation || []).forEach(m => renderEntry(m, m.role));
+    lastConfirm = p.pending || null;
     if (p.pending) appendMessage(confirmCardHtml(p.pending), "anna");
     $("#dev-log").innerHTML = "";
     (p.devlog || []).forEach(appendDevlog);
@@ -911,6 +1350,15 @@ document.addEventListener("DOMContentLoaded", () => {
       call("confirm", parseInt(confirmBtn.dataset.confirm, 10),
            confirmBtn.dataset.approved === "1");
       confirmBtn.closest(".confirm-card").classList.add("resolved");
+      return;
+    }
+    const detailsBtn = e.target.closest("[data-details]");
+    if (detailsBtn) {                       // 11A: same expansion as voice
+      if (lastConfirm) expandConfirmDetails(lastConfirm);
+      return;
+    }
+    if (e.target.closest("#camera-preview")) {   // click the self-view to stop
+      if (cancelCameraTest) cancelCameraTest();
       return;
     }
     const viewBtn = e.target.closest("[data-open-path]");

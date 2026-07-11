@@ -50,6 +50,21 @@ HOTKEY_PHRASES = {
 }
 
 
+_MONITOR_WORDS = {"one": 1, "first": 1, "primary": 1, "main": 1,
+                  "two": 2, "second": 2, "three": 3, "third": 3}
+_MONITOR_NUM = r"(\d+|one|two|three|first|second|third|primary|main)"
+
+
+def _monitor_number(t: str) -> int:
+    """'screen two' / 'monitor 1' / 'second display' -> 2 / 1 / 2. 0 = none."""
+    match = re.search(rf"\b(?:screen|monitor|display)\s*(?:number\s*)?{_MONITOR_NUM}\b", t) \
+        or re.search(rf"\b{_MONITOR_NUM}\s+(?:screen|monitor|display)\b", t)
+    if not match:
+        return 0
+    word = match.group(1)
+    return int(word) if word.isdigit() else _MONITOR_WORDS.get(word, 0)
+
+
 def _norm(s: str) -> str:
     return re.sub(r"[\s.\-_]+", "", s.lower())
 
@@ -123,6 +138,67 @@ def match_rule(raw: str, config, memory=None) -> Optional[ActionPlan]:
         elif re.search(r"\ball\b.*\bscreens?\b|\bboth\b.*\bscreens?\b", t):
             args["screen"] = 0   # explicit all-screens
         return plan("take_screenshot", args=args, msg="Screenshot coming right up.")
+
+    # --- vision (11B) — capture happens ONLY on these explicit triggers ---
+    if re.search(r"\bprivacy mode\b", t):
+        return plan("privacy_mode", msg="Privacy mode.")
+    if re.search(r"\bstop (looking|watching)\b", t) \
+            or re.search(r"\bturn off (the )?(screen vision|screen watching)\b", t) \
+            or re.search(r"\bstop (the )?screen vision\b", t):
+        return plan("stop_screen_watch", msg="Okay, I'll stop looking.")
+    # "anyway" = the user overriding a sensitive-content refusal; the safety
+    # validator turns that into a confirmation (never a silent bypass).
+    anyway = bool(re.search(r"\banyway\b|\bgo ahead and look\b", t))
+    extra = {"allow_sensitive": True} if anyway else {}
+    # Naming the screen must ALWAYS beat the bare "what do you see" camera
+    # phrase: "what do you see on the screen" opened the webcam otherwise.
+    means_screen = re.search(r"\b(screen|monitor|display|desktop|window|page|tab)\b", t)
+    means_camera = re.search(r"\b(camera|webcam)\b", t)
+    # "open the camera APP" means launch Windows Camera; "open the camera"
+    # means Anna should look through it. Keep those apart — routing the former
+    # to camera_look leaves no way to actually open the app.
+    wants_camera_app = re.search(r"\b(camera|webcam)\s+app\b", t)
+    if not wants_camera_app and (
+            (means_camera and re.search(r"\b(look|see|through|use|open|check|show)\b", t))
+            or (re.match(r"what do you see\b", t) and not means_screen)):
+        return plan("camera_look", args=dict(extra),
+                    msg="Taking a quick look through the camera.")
+    if re.search(r"\b(watch|keep an eye on)\b.*\bscreen\b", t) \
+            or re.search(r"\bstart (the )?screen (vision|watching)\b", t):
+        return plan("start_screen_watch", msg="Watching your screen.")
+    if re.search(r"\b(analy[sz]e|read|look at|describe)\b.*\b(this|the|active) window\b", t):
+        return plan("active_window_capture", args=dict(extra),
+                    msg="Looking at that window.")
+    if re.search(r"\bunder (my |the )?(mouse|cursor)\b", t) \
+            or re.search(r"\b(look at|read)\b.*\b(my |the )?cursor\b", t):
+        return plan("region_capture", args=dict(extra),
+                    msg="Looking around your cursor.")
+    if re.search(r"\b(look at|check|describe)\b\s+(my |the )?screen\b", t) \
+            or re.search(r"\bwhat'?s on (my |the )?screen\b", t) \
+            or re.search(r"\bwhat is on (my |the )?screen\b", t) \
+            or re.search(r"\bcan you see (my |the )?screen\b", t) \
+            or (re.search(r"\bwhat do you see\b", t) and means_screen) \
+            or re.search(r"\bread (this|the) error\b", t) \
+            or re.search(r"\bsummari[sz]e (this|the) page\b", t):
+        args = dict(extra)
+        target = _monitor_number(t)     # "…on screen two" -> just that monitor
+        if target:
+            args["screen"] = target
+        return plan("look_at_screen", args=args,
+                    msg="Taking a look at your screen.")
+
+    # --- email (11E): "email <who> saying/that <body>" -> open a draft ---
+    m = re.match(r"(?:email|e-?mail|write (?:an? )?email to|send (?:an? )?email to)\s+"
+                 r"(.+?)(?:\s+(?:saying|that says?|and say|about|with subject|:)\s+(.+))?$",
+                 orig, flags=re.IGNORECASE)
+    if m:
+        who = m.group(1).strip().rstrip(",")
+        rest = (m.group(2) or "").strip()
+        args = {"to": who}
+        if rest:
+            args["body"] = rest
+        return plan("compose_email", args=args,
+                    msg=f"Opening an email draft to {who}.")
 
     # --- clipboard --------------------------------------------------
     if re.search(r"\bsummari[sz]e\b.*\bclipboard\b", t):
@@ -345,6 +421,7 @@ class Agent:
         from app.llm.providers import BrainRouter
         self.brain = BrainRouter(config, lambda: self.llm)
         self.recent_chat_turns = None   # set by controller -> conversation reader
+        self.vision = None              # VisionService (11B), set by controller
 
     # -- planning -----------------------------------------------------
     def plan_rule(self, text: str) -> Optional[ActionPlan]:
@@ -469,5 +546,5 @@ class Agent:
         if plan.intent in ("ask_clarification", "no_action"):
             return ToolResult(True, plan.assistant_message or "Okay.")
         ctx = ToolContext(config=self.config, memory=self.memory, llm=self.llm,
-                          brain=self.brain)
+                          brain=self.brain, vision=self.vision)
         return run_tool(plan.tool_name or plan.intent, plan.arguments, ctx)

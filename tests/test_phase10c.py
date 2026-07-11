@@ -55,6 +55,7 @@ class FakeLiveSession:
         self.cb = callbacks
         self.closed = []
         self.sent_audio = []
+        self.sent_text = []
         self.tool_responses = []
         FakeLiveSession.instances.append(self)
 
@@ -68,7 +69,11 @@ class FakeLiveSession:
         self.sent_audio.append(pcm)
 
     def send_text(self, text):
-        pass
+        self.sent_text.append(text)
+
+    def send_image(self, jpeg, prompt="", mime_type="image/jpeg"):
+        self.sent_images = getattr(self, "sent_images", [])
+        self.sent_images.append((jpeg, prompt, mime_type))
 
     def send_tool_response(self, call_id, name, result):
         self.tool_responses.append((call_id, name, result))
@@ -230,7 +235,8 @@ def test_rule_command_short_circuits_before_any_engine():
                       execute_result=ToolResult(True, "Opening Paint."))
     engine, agent, shown, recorder, selector = make_live_engine(
         config=config, agent=agent)
-    engine._on_input_transcript("open paint")
+    # a COMPLETE sentence: the short-circuit never fires on a partial one
+    engine._on_input_transcript("open paint.")
     assert agent.executed == [plan]              # instant, local, no cloud
     assert shown["results"] and "Opening Paint." in shown["results"][0][0]
     # The model heard the audio too and echoes a tool call — deduped, not
@@ -249,6 +255,51 @@ def test_rule_command_short_circuits_before_any_engine():
     assert responses and responses[0]["success"] is True
 
 
+def test_rule_short_circuit_waits_for_a_complete_sentence():
+    """From real logs: input transcripts stream in. Matching a prefix would
+    run "what do you see" (camera) before "...on my screen" arrived."""
+    plan = ActionPlan(intent="open_app", tool_name="open_app",
+                      arguments={"app_name": "paint"})
+    config = live_config()
+    agent = FakeAgent(config, rule=lambda t: plan,
+                      execute_result=ToolResult(True, "Opening Paint."))
+    engine, agent, shown, *_ = make_live_engine(config=config, agent=agent)
+
+    engine._on_input_transcript("open paint")        # still mid-sentence
+    assert agent.executed == []
+    engine._on_input_transcript(" now.")             # sentence complete
+    assert len(agent.executed) == 1
+
+
+def test_informational_result_is_handed_back_to_the_model():
+    """A local short-circuit left the model with nothing to say — it never saw
+    the vision output. Screen text only crosses with cloud-vision consent."""
+    plan = ActionPlan(intent="look_at_screen", tool_name="look_at_screen")
+    summary = "On your screen I can read: BUILD FAILED"
+
+    # consent OFF -> Anna reports she looked, but the contents stay local
+    config = live_config(cloud_vision_consent=False)
+    agent = FakeAgent(config, rule=lambda t: plan,
+                      execute_result=ToolResult(True, summary))
+    engine, agent, shown, *_ = make_live_engine(config=config, agent=agent)
+    engine._on_input_transcript("what's on my screen?")
+    assert len(agent.executed) == 1
+    sent = " ".join(str(t) for t in engine.session.sent_text)
+    assert sent, "the model was never told anything"
+    assert "BUILD FAILED" not in sent                # screen text stayed local
+    assert "chat panel" in sent
+    assert summary in shown["results"][0][0]         # ...but the user sees it
+
+    # consent ON -> the model gets the content and can voice it
+    config = live_config(cloud_vision_consent=True)
+    agent = FakeAgent(config, rule=lambda t: plan,
+                      execute_result=ToolResult(True, summary))
+    engine, agent, *_ = make_live_engine(config=config, agent=agent)
+    engine._on_input_transcript("what's on my screen?")
+    sent = " ".join(str(t) for t in engine.session.sent_text)
+    assert "BUILD FAILED" in sent
+
+
 def test_rule_short_circuit_respects_settings_and_confirmation():
     plan = ActionPlan(intent="open_app", tool_name="open_app",
                       arguments={"app_name": "paint"})
@@ -256,7 +307,7 @@ def test_rule_short_circuit_respects_settings_and_confirmation():
     config = live_config(engine_rules_first=False)
     agent = FakeAgent(config, rule=lambda t: plan)
     engine, agent, *_ = make_live_engine(config=config, agent=agent)
-    engine._on_input_transcript("open paint")
+    engine._on_input_transcript("open paint.")   # complete: only the setting blocks it
     assert agent.executed == []
     # Confirmation-needing rules never short-circuit (one card, one flow —
     # the Live tool-call path owns them).
@@ -265,7 +316,7 @@ def test_rule_short_circuit_respects_settings_and_confirmation():
     config = live_config()
     agent = FakeAgent(config, rule=lambda t: confirm_plan)
     engine, agent, *_ = make_live_engine(config=config, agent=agent)
-    engine._on_input_transcript("close chrome for me")
+    engine._on_input_transcript("close chrome for me.")  # only the card blocks it
     assert agent.executed == []
 
 

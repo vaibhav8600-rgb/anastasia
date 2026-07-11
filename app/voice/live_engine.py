@@ -17,6 +17,7 @@ only execution channel, and they all pass through app/agent/safety.py.
 """
 
 import queue
+import re
 import threading
 import time
 
@@ -25,6 +26,26 @@ from app.agent.live_tools import LiveToolBridge, live_tool_declarations
 from app.agent.safety import validate_action
 
 RULE_DEDUP_WINDOW_S = 15.0   # model tool call repeating a local rule -> skip
+
+# Tools whose VALUE is the content they return, not the act of running them.
+# A bare "done" tells the user nothing, so the result is fed back to the model
+# to voice — subject to the same content gates as everywhere else.
+SCREEN_CONTENT_TOOLS = {"look_at_screen", "screen_capture",
+                        "active_window_capture", "region_capture", "camera_look"}
+CLIPBOARD_CONTENT_TOOLS = {"clipboard_read", "summarize_clipboard"}
+INFORMATIONAL_TOOLS = SCREEN_CONTENT_TOOLS | CLIPBOARD_CONTENT_TOOLS
+
+# Tools that all mean "grab a still of the screen right now". If Anna already
+# did one locally this turn, the model asking for a DIFFERENT one of these
+# (it heard the same audio and often adds take_screenshot on its own) is
+# redundant — dedup across the whole family, not just the exact tool name.
+SCREEN_SNAPSHOT_FAMILY = {"take_screenshot"} | (SCREEN_CONTENT_TOOLS - {"camera_look"})
+
+
+def _tool_family(name: str) -> str:
+    if name in SCREEN_SNAPSHOT_FAMILY:
+        return "screen_snapshot"
+    return name
 
 
 class LiveEngine:
@@ -57,6 +78,7 @@ class LiveEngine:
         self._player_thread = None
         self._user_buf = ""
         self._anna_buf = ""
+        self._last_user_text = ""
         self._turn_rule_done = False
         self._recent_local = None      # (tool_name, monotonic) rule dedup
         self._healthy_reported = False
@@ -204,7 +226,47 @@ class LiveEngine:
         if not self._user_buf:
             self._turn_rule_done = False     # a new user turn begins
         self._user_buf += text
+        # A confirmation card up while a Live session runs: the user's spoken
+        # "approve"/"cancel" is heard by Gemini, not the local parser — so
+        # voice approval was impossible in Live mode (the model just retried
+        # and the user had to click). Resolve it here from the transcript.
+        if self.pipeline is not None and self.pipeline.confirm.has_pending():
+            if self._resolve_confirmation_by_voice():
+                return
         self._maybe_rule_short_circuit()
+
+    def _resolve_confirmation_by_voice(self) -> bool:
+        """A confirmation is pending; resolve it from what the user just said.
+        The approval word can sit anywhere in a spoken sentence ("yeah okay
+        cancel that"), so we scan every 1-3 word window with the pure
+        classifier. Cancel wins ties — the safe direction. Returns True if
+        the utterance was a confirmation phrase and was consumed."""
+        from app.agent.confirmation_manager import Outcome, _normalize
+        confirm = self.pipeline.confirm
+        pending = confirm.pending
+        if pending is None:
+            return False
+        words = _normalize(self._user_buf).split()
+        if not words:
+            return False
+        grams = [" ".join(words[i:i + n])
+                 for n in (1, 2, 3) for i in range(len(words) - n + 1)]
+        found = {confirm.classify(g, pending.strong_required) for g in grams}
+
+        if Outcome.CANCELLED in found:
+            self._user_buf = ""
+            self.pipeline.cancel_pending(action_id=pending.id)
+            return True
+        if Outcome.APPROVED in found:
+            self._user_buf = ""
+            self.pipeline.approve_pending(action_id=pending.id)
+            return True
+        if Outcome.NEEDS_STRONG in found:
+            self._user_buf = ""
+            self.notify("That one's destructive — say “Anna approve” to go "
+                        "ahead, or “cancel”.")
+            return True
+        return False   # not a confirmation phrase — let Gemini keep talking
 
     def _on_output_transcript(self, text: str) -> None:
         self._flush_user()
@@ -217,6 +279,7 @@ class LiveEngine:
         text = self._user_buf.strip()
         self._user_buf = ""
         if text:
+            self._last_user_text = text     # the camera guard reads this
             self.show_user(text)
 
     def _flush_anna(self) -> None:
@@ -239,6 +302,12 @@ class LiveEngine:
         text = self._user_buf.strip()
         if len(text) < 4:
             return
+        # Only ever act on a COMPLETE sentence. Gemini's input transcription is
+        # punctuated, and matching a prefix would run "what do you see" (camera)
+        # before "...on my screen" had even arrived. If punctuation never comes,
+        # nothing is short-circuited and the model's tool call handles it.
+        if not text.endswith((".", "?", "!")):
+            return
         try:
             plan = self.agent.plan_rule(text)
         except Exception:
@@ -249,6 +318,16 @@ class LiveEngine:
         if not safety.allowed or safety.requires_confirmation:
             return
         self._turn_rule_done = True
+        # Camera in a Live session: hand the frame STRAIGHT to the model so it
+        # sees the photo itself (better than a pre-written description, and no
+        # slow separate vision call). Still one frame — a snapshot, not a
+        # stream. Runs on a worker: the browser camera warm-up blocks ~1-6s.
+        if plan.tool_name == "camera_look" and self._native_camera_ok():
+            self._recent_local = ("camera_look", time.monotonic())
+            devlog.log("[live_rule] camera_look -> native Live vision")
+            threading.Thread(target=self._native_camera_look, daemon=True,
+                             name="anna-live-camera").start()
+            return
         result = self.agent.execute(plan)             # whitelisted executor
         self._recent_local = (plan.tool_name, time.monotonic())
         devlog.log(f"[live_rule] short-circuit: {plan.tool_name} "
@@ -263,12 +342,155 @@ class LiveEngine:
         self.show_result(result.message or "Done.",
                          {"intent": plan.intent, "success": result.success,
                           "data": result.data})
+        self._feed_result_to_model(plan, result)
+
+    def _feed_result_to_model(self, plan, result) -> None:
+        """A local short-circuit leaves the model with nothing to say — it
+        never saw the tool's output. For informational tools, hand the result
+        back so Anna can actually answer.
+
+        The content gates still apply: screen text only reaches Google with
+        cloud-vision consent, clipboard text only with the clipboard opt-in.
+        Without them Anna says what she did, and the detail stays on screen.
+        """
+        if self.session is None or not self.active or not result.success:
+            return
+        tool = plan.tool_name
+        if tool not in INFORMATIONAL_TOOLS:
+            return
+
+        allowed, why = True, ""
+        if tool in SCREEN_CONTENT_TOOLS:
+            from app.llm.providers import vision_cloud_allowed
+            allowed, why = vision_cloud_allowed(self.config)
+        elif tool in CLIPBOARD_CONTENT_TOOLS:
+            from app.llm.providers import DataClass, cloud_allowed
+            allowed, why = cloud_allowed({DataClass.CLIPBOARD}, self.config)
+
+        if allowed:
+            note = (f"(You just ran {tool} on the user's PC. It returned: "
+                    f"{str(result.message)[:1500]}) Tell the user what you "
+                    "found, briefly and naturally.")
+        else:
+            note = (f"(You just ran {tool} locally, but its contents can't be "
+                    f"shared with you: {why}. The details are shown in the "
+                    "user's chat panel.) Tell them you've looked and put it on "
+                    "screen, and that they can enable it in Settings.")
+        try:
+            self.session.send_text(note)
+        except Exception as e:
+            devlog.warn(f"live: couldn't hand the result back "
+                        f"({' '.join(str(e).split())[:100]})")
+
+    def _native_camera_ok(self) -> bool:
+        """Native Live camera is on, a session is live, cloud vision is
+        consented (the frame leaves the machine either way), and we can reach
+        the camera."""
+        if not getattr(self.config, "live_native_camera", True):
+            return False
+        if self.session is None or not self.active:
+            return False
+        from app.llm.providers import vision_cloud_allowed
+        if not vision_cloud_allowed(self.config)[0]:
+            return False
+        vision = getattr(self.agent, "vision", None)
+        return vision is not None and getattr(vision, "camera", None) is not None
+
+    def _native_camera_look(self) -> None:
+        """Capture ONE camera frame and send it into the live session; the
+        model describes what it sees in its own voice."""
+        vision = getattr(self.agent, "vision", None)
+        try:
+            frame = vision.camera.capture_once()
+        except Exception as e:
+            msg = " ".join(str(e).split())[:160]
+            devlog.warn(f"[live_rule] native camera failed: {msg}")
+            if self.session is not None and self.active:
+                self.session.send_text(
+                    f"(The camera couldn't take a photo: {msg}) Tell the user "
+                    "briefly and suggest they try again.")
+            return
+        try:
+            from app.vision.camera import flatness, looks_flat
+            if looks_flat(frame.image):
+                # A featureless grey card: a virtual camera that isn't
+                # connected, a covered lens, or another app holding the webcam.
+                # Never pass that off as a photo of the user.
+                devlog.warn(f"Vision: camera frame is featureless "
+                            f"(luminance std {flatness(frame.image):.1f}) — "
+                            "wrong camera, or another app is using it.")
+                if self.session is not None and self.active:
+                    self.session.send_text(
+                        "(The camera only gave a blank grey image.) Tell the "
+                        "user their webcam isn't giving a real picture — another "
+                        "app may be using it, the lens may be covered, or the "
+                        "wrong camera is selected in Settings → Vision → Camera.")
+                return
+            import io
+            buf = io.BytesIO()
+            frame.image.convert("RGB").save(buf, "JPEG", quality=80)
+            jpeg = buf.getvalue()
+        finally:
+            frame.release()
+        if self.session is None or not self.active:
+            return
+        # Image AND prompt in ONE turn — sending them separately makes the
+        # model describe an image it never really looked at.
+        self.session.send_image(
+            jpeg,
+            "This is a photo from the user's camera, taken just now. Describe "
+            "what you see — the person, objects and setting — warmly and "
+            "briefly. Don't try to name or identify anyone.")
+
+    def _refuse_camera_app(self) -> bool:
+        """Should open_app('camera') be refused? DEFAULT: yes.
+
+        Anna has her own camera vision. The model reflexively fires
+        open_app('camera') whenever the user asks her to LOOK — and the Windows
+        Camera app then SEIZES the webcam, so Anna's own capture comes back a
+        grey card. We cannot decide this from the transcript, because the tool
+        call routinely arrives BEFORE it (in one run, 21 seconds before).
+
+        So we refuse unless the user explicitly asked for the camera APP. The
+        cost of refusing wrongly is one repeated sentence; the cost of allowing
+        wrongly is that camera vision is broken every time.
+        """
+        text = f"{self._user_buf or ''} {self._last_user_text or ''}".lower()
+        if re.search(r"\b(camera|webcam)\s+app\b", text):
+            return False        # they really do want the Windows Camera app
+        return True
 
     def _skip_check(self, name: str, args: dict):
-        """Bridge hook: dedup a model tool call that repeats the local rule."""
+        """Bridge hook: dedup a model tool call that repeats what the local
+        rule router already did this turn — by family, so the model's habitual
+        extra take_screenshot after a look_at_screen is skipped too."""
+        # "Open the camera and tell me what you see" makes the model ALSO fire
+        # open_app("camera") — which launches the Windows Camera app, and that
+        # app SEIZES the webcam, so Anna's own capture comes back a flat grey
+        # placeholder. Anna already has the camera directly; refuse the launch.
+        # Checked BEFORE the _recent_local gate, so it holds even when the
+        # model's call arrives first.
+        if name == "open_app":
+            app = str((args or {}).get("app_name") or (args or {}).get("name")
+                      or (args or {}).get("app") or "").lower()
+            if any(word in app for word in ("camera", "webcam")) \
+                    and self._refuse_camera_app():
+                devlog.log("[gemini_live] refused open_app(camera) — Anna uses "
+                           "the webcam directly; the Camera app would seize it.")
+                return ("Do NOT open the Windows Camera app — it would seize the "
+                        "webcam and Anna would only get a blank grey image. Anna "
+                        "looks through the camera HERSELF; use camera_look (or "
+                        "she has already taken the photo). Only open the Camera "
+                        "app if the user literally says “the camera app”.")
+
         recent = self._recent_local
-        if recent and recent[0] == name \
-                and time.monotonic() - recent[1] < RULE_DEDUP_WINDOW_S:
+        if not recent or time.monotonic() - recent[1] >= RULE_DEDUP_WINDOW_S:
+            return None
+
+        if _tool_family(recent[0]) == _tool_family(name):
+            if _tool_family(name) == "screen_snapshot":
+                return ("Anna just captured the screen a moment ago — use that, "
+                        "don't grab it again. Just tell the user what's there.")
             return ("Anna already did this locally an instant ago — done. "
                     "Don't repeat it; just confirm to the user.")
         return None
@@ -288,6 +510,9 @@ class LiveEngine:
             plan, safety, f"Gemini Live: {plan.tool_name}", callback)
         if not accepted:
             return False   # another confirmation is already pending
+        # Discard anything said before the card so the NEXT words are read as
+        # the answer, and let Gemini voice the prompt while we listen.
+        self._user_buf = ""
         done.wait(self.pipeline.confirm_timeout_seconds + 5.0)
         return outcome["approved"]
 

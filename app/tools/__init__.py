@@ -19,6 +19,8 @@ class ToolContext:
     memory: Any = None
     llm: Any = None    # OllamaClient (local), for summarize_clipboard
     brain: Any = None  # BrainRouter — privacy-aware provider routing
+    vision: Any = None  # VisionService (11B) — screen/camera perception
+    resolver: Any = None  # TargetResolver (11C) — UIA/Playwright/vision
 
 
 TOOL_REGISTRY: Dict[str, Callable] = {}
@@ -26,7 +28,8 @@ _LOADED = False
 
 _TOOL_MODULES = [
     "open_app", "file_tools", "keyboard_mouse", "clipboard_tools",
-    "screenshot", "browser", "terminal", "window_control",
+    "screenshot", "browser", "terminal", "window_control", "vision_tools",
+    "control_tools", "email_tools",
 ]
 
 

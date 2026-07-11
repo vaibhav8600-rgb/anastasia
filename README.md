@@ -183,14 +183,155 @@ python app\main.py --doctor   # health check
   talking (silence ends the recording). Press again while she's speaking to
   cut her off (barge-in).
 - **Type:** the input box at the bottom right. Enter sends.
-- **Approvals:** terminal/window commands show an amber card — Run it or
-  Cancel (auto-cancels in 30 s).
+- **Approvals (voice or click):** risky commands show an amber card — click
+  *Run it* / *Cancel*, or just say it. Whichever comes first wins.
+
+  | Say | Effect |
+  |---|---|
+  | `approve` · `yes` · `do it` · `go ahead` · `run it` | approve an ordinary confirmation |
+  | **`anna approve`** · `i approve` · `confirm action` | **required** for destructive-tier actions (see below) |
+  | `cancel` · `no` · `stop` · `not now` · `leave it` | cancel (a casual word is always enough to stop) |
+  | `what are you asking?` | Anna repeats the confirmation aloud |
+  | `show details` | expands the card with the exact tool + arguments |
+
+  **Destructive tier needs the strong phrase.** Terminal commands, deletes,
+  moves/renames and (from 11C) sends/submits are refused a plain "yes" — the
+  card turns red and Anna asks for **"Anna approve"**. This is decided from
+  the *safety validator's* result plus a hardcoded tool list, so a plan that
+  under-states its own risk cannot dodge it.
+
+  Anything Anna doesn't recognise as approve/cancel is **never** treated as
+  approval — she asks once more and the action stays parked. A stray "yes"
+  with nothing pending does nothing and is routed as normal speech.
+  Confirmations auto-cancel after `confirmation_timeout_s` (default 30 s),
+  and only one can be pending at a time — a second risky action is deferred,
+  never silently swapped in.
+
+  By default Anna does **not** open the mic on her own to hear your approval:
+  press push-to-talk (or the card's voice button) and speak. If you want the
+  mic to reopen automatically while a card is up during continuous
+  hands-free conversation, set `confirmation_voice_listen: true`.
 - **Wake word** (optional): flip the toggle and just say **"Hey Anna"** (or
   "Anastasia"). This uses the local Whisper STT to listen for her name — no
   training, no extra install. Say the full "Hey Anna"; a bare "Anna" is too
   short for reliable recognition, and there's a ~1–3 s recognition delay
   since it's local speech-to-text. Prefer the classic "Hey Jarvis" wake model?
   `pip install openwakeword` and set `wake_word_backend: "openwakeword"`.
+- **Vision — Anna can look, but only when you ask.** Nothing is ever captured
+  silently, and a badge is on screen for the entire time anything is.
+
+  | Say | What happens |
+  |---|---|
+  | `look at my screen` · `what's on my screen` · `read this error` · `summarize this page` | **one** frame of the desktop, read once, thrown away |
+  | `analyze this window` | just the focused window (best for reading text) |
+  | `what's under my cursor` | a small box around the pointer |
+  | `watch my screen` | **one frame every ~1.5 s**, each read independently and discarded — a cyan *Screen Vision Active* badge + border stays up the whole time, and it stops itself when idle |
+  | `stop looking` | ends watching |
+  | `what do you see` · `look through the camera` | camera opens for **exactly one frame**, then stops — red *Camera on* badge for precisely that moment |
+  | **`privacy mode`** | kills screen watching, the camera, **and** any Gemini Live audio session, instantly |
+
+  **This is snapshots, never a stream.** Even watching mode grabs single stills;
+  no video feed is ever opened to any cloud provider, and no frame outlives the
+  moment it is read.
+
+  **Frames stay on this PC by default.** Text is extracted by local OCR
+  (install Tesseract: `winget install UB-Mannheim.TesseractOCR` then
+  `python -m pip install pytesseract` — without it Anna says so honestly rather
+  than pretending she read your screen). Sending a frame to Gemini for a richer
+  description needs its **own** consent toggle in Settings → Vision, separate
+  from every other cloud setting and **off by default**. Frames are never
+  saved to disk unless you turn that on, and never appear in the logs.
+
+  **Screens that look sensitive are not analyzed at all** — not locally, not in
+  the cloud. If Anna spots a password field, an API key, or words like "account
+  number" or "CVV", she stops and asks. Overriding that ("look at my screen
+  anyway") is a **high-risk action**, so it needs the strong approval phrase.
+
+  That check is fed by local OCR, so **if the scan can't run, Anna won't send
+  the screen either** — a scan that never ran is not a scan that found nothing.
+  (Without Tesseract installed at all, cloud vision still works, but the log
+  says plainly that no pre-scan happened.)
+
+  On a **multi-monitor** setup, "what's on my screen" captures the monitor you're
+  actually working on, not both squashed together. Say "screen two" to pick one.
+
+#### Setting up the camera
+
+Anna opens the webcam only when you ask, for **one frame**, then closes it — with
+a red badge and a live self-view so you can see exactly what she captured.
+
+Go to **Settings → Vision → Camera**, pick your webcam, and hit **📷 Test this
+camera**. The preview stays up while the camera wakes (some take several seconds)
+and tells you honestly whether it works, is blank, or can't be opened. Once it
+says ✅, **Save** to pin it.
+
+> **Virtual cameras show grey.** If you have **Camo, OBS, DroidCam** or similar
+> installed, one of them is often the Windows *default* — and it hands back a grey
+> placeholder unless its phone/source is connected. Anna flags these in the
+> dropdown, skips them on "Automatic", and refuses to describe a blank frame. If
+> the camera stays grey even for a real webcam, another app is holding it — quit
+> Camo/Teams/the Camera app and retry.
+
+Anna also **never opens the Windows Camera app** to "look" — that app seizes the
+webcam and would leave her with a blank image. She uses the camera directly. (If
+you genuinely want the app, say "open the camera **app**".)
+
+**In a Gemini Live conversation the camera frame goes straight into the session**,
+so Anna sees the photo herself and describes it in her own voice — no separate,
+slower vision call. It is still **one frame** per look, never a video stream. She
+describes people, objects and setting, but will not try to identify anyone.
+
+- **Controlling other apps — Anna clicks real controls, not pixels.** Two
+  backends, each for what it's good at:
+  - **Native Windows apps** (Notepad, File Explorer, Mail/Outlook, Teams…) via
+    **UIA**: she finds the actual button/menu/field by its accessible name and
+    type, with a real bounding box. `uiautomation` is the dependency.
+  - **Web pages** (Gmail, WhatsApp Web, any site) via **Playwright** over the
+    DevTools Protocol: she reads the real DOM and clicks by role/text/selector.
+    She **attaches to your already-open, logged-in browser** — start it once
+    with a debug port so she can: `chrome.exe --remote-debugging-port=9222`
+    (she never opens a separate, logged-out profile, and you don't need
+    `playwright install`).
+  - **Vision-guessed coordinates are the last resort only** — used when neither
+    backend can find the control (custom-drawn UI, some Electron apps with a
+    sparse accessibility tree). Any vision guess is flagged *low confidence* and
+    **always** asks first, showing a cropped screenshot of exactly what it would
+    click.
+
+  **The destructive-target guard lives in the safety validator, not the
+  planner.** Any resolved control whose name contains **Send, Submit, Pay,
+  Delete, Confirm, Install, Post, Purchase, Transfer, Approve** forces a
+  confirmation at high risk — *regardless of what the plan or a cloud model
+  claimed the risk was*. A misfiring planner literally cannot click "Send"
+  without asking, and clicking one of these needs the strong **"Anna approve"**
+  phrase. **Password fields** (detected via UIA's `IsPassword`) are never typed
+  into unasked and never read aloud or logged.
+
+- **Multi-step tasks are checkpointed, never an autonomous run.** For a task
+  like "draft an email to Rahul", Anna proposes a short step list, then runs it
+  **one step at a time**: she re-checks the screen before each step, every step
+  still passes the same safety validator, the final Send is always confirmed,
+  and she **pauses to check in** after a few steps (`task_max_steps_before_checkin`,
+  default 5) rather than barrelling ahead. Any step that wasn't in the plan she
+  showed you needs fresh approval before it runs, and if a step fails she stops
+  and tells you which one and why — she never ploughs on past a failure.
+
+- **Email, messaging, and other apps.** Say "email rahul@x.com saying I'll be
+  late" and Anna opens a **pre-filled draft** — Gmail in your browser, or your
+  desktop client (Outlook) via `mailto:` — for you to review. **No API or
+  sign-in setup is required.** Nothing is sent by opening a draft; the **send**
+  is a separate, always-confirmed step that needs the strong "Anna approve"
+  phrase, refuses to go out without a clear recipient, and names every
+  recipient when there's more than one. Set `email_provider` (auto/gmail/
+  outlook) in config.
+
+  Messaging apps (Teams, WhatsApp, Telegram) follow the same draft → preview →
+  confirm → send pattern, and general apps work through the same UIA control
+  (11C) — "in Notepad type…", "in Calculator press…". **Payments and money
+  transfers are refused outright**, never merely confirmed: Anna will open your
+  bank's page and read it, but she will not click Pay/Transfer/Place-order —
+  you complete any payment yourself.
+
 - Full command list: [SKILL.md](SKILL.md).
 
 ## Troubleshooting
@@ -213,6 +354,25 @@ python app\main.py --doctor   # health check
 | Magenta mic ring / "streaming" badge | Normal in streaming mode — it means live mic audio is going to Deepgram. Switch Speech recognition to *local* to keep audio on-device |
 | Streaming stopped working | Deepgram failed 3× → the STT circuit routes to local Whisper for 120s, then auto-probes. Anna keeps working on local Whisper meanwhile |
 | Mic stays on between replies | Continuous Conversation mode is on. Say "stop listening", tap the mic, or toggle Conversation off |
+| Saying "yes" doesn't approve a command | Destructive-tier actions (terminal, delete, move/rename) need the strong phrase **"Anna approve"** — the card is red and says so. Casual words always work for *cancel* |
+| Anna doesn't hear my spoken "approve" | She doesn't open the mic by herself while a card is up. Press Ctrl+Alt+Space and say it, click the card, or set `confirmation_voice_listen: true` to auto-listen in hands-free mode |
+| "I'm still waiting on your approval for the last one" | Only one confirmation can be pending. Answer or cancel it (or wait 30 s for it to expire) and the new one will be offered |
+| "I can't read the text: install Tesseract OCR" | Local OCR isn't installed. `winget install UB-Mannheim.TesseractOCR` then `python -m pip install pytesseract`. Everything stays on this PC. Alternatively enable cloud vision in Settings → Vision |
+| "Look at my screen" is slow or reads little text (local-only) | Local OCR of a dense screen (a code editor especially) is intrinsically slow — Anna caps it and downscales, so it degrades to partial text rather than hanging. Turn on cloud vision in Settings → Vision for a fast, full description, or ask about a single window ("analyze this window") which reads cleaner |
+| Cyan border / "Screen Vision Active" badge | Watching mode is on (one frame every ~1.5 s, each discarded). Say "stop looking" or "privacy mode". It also stops itself when idle |
+| Red "Camera on" badge stays up | It shouldn't — the camera is stopped in a `finally` block after a single frame. If it sticks, say "privacy mode" and file an issue with the Developer Tools log |
+| "the camera didn't respond" | The app window needs camera permission in Windows (Settings → Privacy → Camera → allow desktop apps) |
+| Camera shows a **grey/blank picture** | A virtual camera (Camo, OBS, DroidCam) is being used and its phone/source isn't connected — these are often the Windows *default*. Settings → Vision → Camera → pick a real webcam → **Test** → Save. If a real webcam is also grey, another app is holding it: quit Camo / Teams / the Camera app |
+| Settings shows "Camera 1" instead of real names | Browsers hide camera names until permission has been granted once. Open Settings again (Anna unlocks the names on the way in), or run one camera Test first |
+| The **Windows Camera app** opens when I ask Anna to look | It shouldn't — that app seizes the webcam and leaves Anna blank, so she refuses to launch it. If it still opens, file an issue with the log. To open it deliberately, say "open the camera **app**" |
+| Anna won't send a screen: "couldn't read it well enough to check it" | The local sensitive-content scan (OCR) failed, so she won't ship an unchecked screen to the cloud. Retry, or say "look at my screen anyway" and approve with the strong phrase |
+| Anna refuses to look at a screen | She spotted something that looks like a password, API key or banking detail and won't analyze it. Say "look at my screen anyway" and approve with the strong phrase |
+| Cloud vision says a model is unavailable | Preview models churn. Anna retries a fallback model automatically and, failing that, degrades to local OCR. Set a different `vision_cloud_model` in Settings → Vision |
+| "I can't reach your browser on localhost:9222" | Playwright attaches to your real browser over CDP. Start it once with a debug port: close Chrome, then `chrome.exe --remote-debugging-port=9222`. Native-app control (UIA) needs nothing extra |
+| Anna clicked the wrong thing / says "only 72% sure" | She couldn't find the control through UIA or the browser DOM and fell back to guessing from pixels. That always asks first and shows a crop — check it before approving. Better accessibility (native apps, real web pages) avoids the guess entirely |
+| "that's a destructive control — needs your OK" on a normal button | The button's name contains Send/Submit/Pay/Delete/Confirm/Install/Post/Purchase/Transfer/Approve. That's deliberate and enforced in the validator. Edit `destructive_targets` in config if a specific app misuses one of these words |
+| Electron app controls aren't found | Some Electron apps expose a sparse accessibility tree to UIA. Anna falls back to the vision guess (which asks first). Where the app has a web version, the browser backend works better |
+| `pip` fails with "Fatal error in launcher" | This venv's `pip.exe` has a stale baked-in path. Use `python -m pip install ...` instead |
 | "Engine: Pipeline (Live offline)" chip | Gemini Live is selected but unreachable (no key / no consent / offline / circuit open after 3 failures). Anna keeps working on the pipeline; Live auto-probes after 120s |
 | Purple mic ring / "Live — audio streaming to Google" badge | Normal in Live mode — continuous mic audio is going to Google and the session is metered. Tap the mic to end it; idle sessions auto-close |
 | Live session ends by itself mid-conversation | Either the ~15-min session cap hit without a resumption handle (rare; it normally resumes invisibly), the 20s stall watchdog fired, or the 60s idle auto-close — all fall back cleanly. See Developer Tools for which |

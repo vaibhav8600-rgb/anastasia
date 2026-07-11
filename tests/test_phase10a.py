@@ -39,6 +39,7 @@ class FakeSession:
 
     def __init__(self, script=None, turns=None, hold_open=True):
         self.sent_audio = []
+        self.sent_video = []
         self.sent_text = []
         self.sent_tool_responses = []
         self.turns = [list(t) for t in (turns if turns is not None
@@ -46,8 +47,11 @@ class FakeSession:
         self.hold_open = hold_open
         self.exited = threading.Event()
 
-    async def send_realtime_input(self, audio=None, **_k):
-        self.sent_audio.append(audio)
+    async def send_realtime_input(self, audio=None, video=None, **_k):
+        if audio is not None:
+            self.sent_audio.append(audio)
+        if video is not None:
+            self.sent_video.append(video)
 
     async def send_client_content(self, turns=None, turn_complete=True, **_k):
         self.sent_text.append(turns)

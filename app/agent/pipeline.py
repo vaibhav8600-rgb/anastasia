@@ -16,9 +16,10 @@ is fully testable without any GUI.
 
 import threading
 import time
-from dataclasses import dataclass
 from typing import Optional, Protocol
 
+from app.agent.confirmation_manager import (ConfirmationManager, Outcome,
+                                            PendingAction)
 from app.agent.devlog import CommandTrace, devlog
 from app.agent.normalizer import normalize_command
 from app.agent.router import classify_input_mode, match_fuzzy_command
@@ -36,23 +37,12 @@ FUZZY_TIMEOUT_MESSAGE = "No worries — I let that suggestion go."
 TIMEOUT_MESSAGE = ("The local model is taking too long, so I skipped that one. "
                    "Simple commands still work instantly.")
 CONFIRM_TIMEOUT_MESSAGE = "That approval timed out, so I cancelled it to be safe."
-
-FUZZY_YES = {"yes", "yeah", "yep", "haan", "confirm", "go ahead", "do it"}
-FUZZY_NO = {"no", "nope", "cancel", "stop", "never mind", "nevermind"}
-
-
-@dataclass
-class PendingAction:
-    id: int
-    plan: object
-    safety: object
-    transcript: str
-    kind: str = "safety"
-    message: str = ""
-    # kind="live_tool" (10C): approve/cancel/timeout fires callback(approved)
-    # exactly once instead of executing through the pipeline — the Gemini
-    # Live tool bridge owns execution and the tool_response.
-    callback: object = None
+STRONG_REQUIRED_MESSAGE = ("That one's destructive, so a plain yes isn't enough — "
+                           "say “Anna approve” to go ahead, or “cancel”.")
+UNCLEAR_MESSAGE = ("I didn't catch that as an approve or a cancel — "
+                   "say “approve” or “cancel”.")
+DEFERRED_MESSAGE = ("Hold on — I'm still waiting on your approval for the last "
+                    "one. Answer that first and I'll come back to this.")
 
 
 class PipelineUI(Protocol):
@@ -68,6 +58,9 @@ class PipelineUI(Protocol):
     def ask_confirmation(self, action_id: int, transcript: str, plan, safety,
                          kind: str = "safety", message: str = "") -> None: ...
     def hide_confirmation(self) -> None: ...
+    # Optional (11A): "show details" expands the pending card. Guarded with
+    # hasattr at the call site so older fakes keep working.
+    def show_confirmation_details(self, payload: dict) -> None: ...
 
 
 class CommandPipeline:
@@ -88,13 +81,23 @@ class CommandPipeline:
         self.fuzzy_timeout_seconds = fuzzy_timeout_seconds
 
         self.is_processing_command = False
-        self.pending: Optional[PendingAction] = None
-        self._action_counter = 0
+        # 11A: the confirmation state machine owns pending state, expiry and
+        # voice-phrase parsing. The pipeline still owns execution.
+        self.confirm = ConfirmationManager(
+            timeout_s=confirm_timeout_seconds,
+            on_expire=lambda p: self.cancel_pending(reason="timeout",
+                                                    action_id=p.id))
         self._busy_lock = threading.Lock()
-        self._pending_lock = threading.Lock()
         self._watchdog: Optional[threading.Timer] = None
         self._watchdog_token = None
-        self._confirm_timer: Optional[threading.Timer] = None
+
+    @property
+    def pending(self) -> Optional[PendingAction]:
+        return self.confirm.pending
+
+    @pending.setter
+    def pending(self, value) -> None:
+        self.confirm.pending = value
 
     # ------------------------------------------------------------ entry
     def submit(self, text: str, source: str = "typed", confidence=None,
@@ -135,16 +138,13 @@ class CommandPipeline:
             elif source in ("voice", "wake_word"):
                 self.ui.show_info(EMPTY_MESSAGE)
             return
-        if self.pending is not None:
-            if voice_source and self.pending.kind == "fuzzy":
-                answer = norm.cleaned.lower().strip(" .!?")
-                if answer in FUZZY_YES:
-                    self.approve_pending(action_id=self.pending.id)
-                    return
-                if answer in FUZZY_NO:
-                    self.cancel_pending(action_id=self.pending.id)
-                    return
-            self.ui.show_info(PENDING_MESSAGE)
+        if self.confirm.has_pending():
+            # 11A.2: approval words are parsed LOCALLY and never reach the LLM
+            # chat path. Voice and typed are treated identically. The RAW text
+            # is used on purpose — normalization strips a leading wake word,
+            # which would turn the strong "anna approve" into a casual
+            # "approve" on exactly the actions that demand the strong phrase.
+            self.handle_confirmation_utterance(text)
             return
         if self.is_processing_command:
             self.ui.show_info(BUSY_MESSAGE)
@@ -156,6 +156,42 @@ class CommandPipeline:
                              daemon=True, name="anna-command").start()
         else:
             self._process(norm, source, confidence, stt_ms)
+
+    # -------------------------------------------- pending-confirmation input
+    def handle_confirmation_utterance(self, raw_text: str) -> Outcome:
+        """Route an utterance heard while a confirmation is pending (11A.2).
+        Never executes on ambiguity: unclear input re-asks, it never runs.
+        Returns the Outcome (NONE when nothing was pending)."""
+        pending = self.confirm.pending
+        if pending is None:
+            return Outcome.NONE
+        outcome = self.confirm.handle_utterance(raw_text)
+        if outcome is Outcome.APPROVED:
+            self.approve_pending(action_id=pending.id)
+        elif outcome is Outcome.CANCELLED:
+            self.cancel_pending(action_id=pending.id)
+        elif outcome is Outcome.NEEDS_STRONG:
+            devlog.warn(f"Casual approval rejected for destructive-tier "
+                        f"{pending.plan.tool_name!r} — strong phrase required.")
+            self._say_info(STRONG_REQUIRED_MESSAGE)
+        elif outcome is Outcome.REPEAT:
+            self._say_info(self.confirm.summary())
+        elif outcome is Outcome.DETAILS:
+            payload = self.confirm.payload()
+            if payload is not None and hasattr(self.ui, "show_confirmation_details"):
+                self.ui.show_confirmation_details(payload)
+            self.ui.show_info(f"Showing the full details for "
+                              f"{pending.plan.tool_name}.")
+        else:   # UNCLEAR — ask once more, then stay quiet until it expires
+            if self.confirm.reprompts <= 1:
+                self._say_info(UNCLEAR_MESSAGE)
+            else:
+                self.ui.show_info(PENDING_MESSAGE)
+        return outcome
+
+    def _say_info(self, text: str) -> None:
+        self.ui.show_info(text)
+        self.speech.speak_async(text)
 
     def _low_confidence(self, source: str, confidence) -> bool:
         if source not in ("voice", "wake_word") or confidence is None:
@@ -240,10 +276,14 @@ class CommandPipeline:
                     message = f"Did you mean {fuzzy.matched_target}?"
                     action_id = self._set_pending(plan, safety, transcript,
                                                   kind="fuzzy", message=message)
+                    if action_id is None:
+                        self.ui.show_info(DEFERRED_MESSAGE)
+                        return
                     self.ui.set_state("waiting_clarification")
                     self.ui.ask_confirmation(action_id, transcript, plan, safety,
                                              kind="fuzzy", message=message)
                     self.speech.speak_async(message)
+                    self.confirm.begin_listening()
                     return
             elif self._low_confidence(source, confidence):
                 trace.route = "garble"
@@ -314,12 +354,16 @@ class CommandPipeline:
             # 4) confirmation gate — hand over to the user, release busy
             if safety.requires_confirmation:
                 action_id = self._set_pending(plan, safety, transcript)
+                if action_id is None:
+                    self.ui.show_info(DEFERRED_MESSAGE)
+                    return
                 self.ui.set_state("waiting_confirmation")
                 self.ui.ask_confirmation(action_id, transcript, plan, safety,
                                          kind="safety", message="")
-                warn = plan.confirmation_message or \
-                    "This one needs your OK — check the screen for me?"
-                self.speech.speak_async(warn)
+                # Spoken summary tells the user which phrase unlocks it (11A.3):
+                # "approve"/"cancel", or "Anna approve" for destructive-tier.
+                self.speech.speak_async(self.confirm.summary())
+                self.confirm.begin_listening()
                 return
 
             # 5) execute
@@ -448,17 +492,20 @@ class CommandPipeline:
         """A non-pipeline source (the Gemini Live tool bridge) asks the user
         for approval through the SAME confirmation card. callback(approved)
         fires exactly once — approve, cancel, or timeout (False). Returns
-        False if another confirmation is already pending (caller denies)."""
-        with self._pending_lock:
-            if self.pending is not None:
-                return False
+        False if another confirmation is already pending (caller denies).
+
+        The manager refuses atomically, so there is no check-then-act race
+        between two Live tool calls arriving together."""
         action_id = self._set_pending(plan, safety, transcript,
                                       kind="live_tool", callback=callback)
+        if action_id is None:
+            return False        # deferred — another confirmation owns the card
         self.ui.set_state("waiting_confirmation")
         self.ui.ask_confirmation(action_id, transcript, plan, safety,
                                  kind="safety",
                                  message=plan.confirmation_message
                                          or safety.reason)
+        self.confirm.begin_listening()
         return True
 
     @staticmethod
@@ -470,49 +517,27 @@ class CommandPipeline:
 
     def _set_pending(self, plan, safety, transcript: str,
                      kind: str = "safety", message: str = "",
-                     callback=None) -> int:
-        with self._pending_lock:
-            self._action_counter += 1
-            action_id = self._action_counter
-            self.pending = PendingAction(action_id, plan, safety, transcript,
-                                         kind=kind, message=message,
-                                         callback=callback)
-            timeout = (self.fuzzy_timeout_seconds if kind == "fuzzy"
-                       else self.confirm_timeout_seconds)
-            self._confirm_timer = threading.Timer(
-                timeout,
-                lambda: self.cancel_pending(reason="timeout", action_id=action_id))
-            self._confirm_timer.daemon = True
-            self._confirm_timer.start()
-        return action_id
+                     callback=None, details: dict = None):
+        """Arm a confirmation. Returns the action id, or None when another
+        confirmation is already pending (deferred — never overwritten)."""
+        timeout = (self.fuzzy_timeout_seconds if kind == "fuzzy"
+                   else self.confirm_timeout_seconds)
+        result = self.confirm.request(plan, safety, transcript, kind=kind,
+                                      message=message, callback=callback,
+                                      timeout_s=timeout, details=details)
+        if not result.accepted:
+            return None
+        return result.action_id
 
     def _take_pending(self, action_id=None):
         """Pop the pending action; None if there is none or the id is stale
-        (e.g. a click on a card that already timed out)."""
-        with self._pending_lock:
-            if self.pending is None:
-                return None
-            if action_id is not None and self.pending.id != action_id:
-                return None
-            pending, self.pending = self.pending, None
-            if self._confirm_timer is not None:
-                self._confirm_timer.cancel()
-                self._confirm_timer = None
-        return pending
+        (e.g. a click on a card that already timed out, or the loser of a
+        voice/click race — whichever arrives first wins)."""
+        return self.confirm.take(action_id)
 
     def pending_payload(self):
         """Serializable view of the pending confirmation (full_state)."""
-        with self._pending_lock:
-            if self.pending is None:
-                return None
-            pending = self.pending
-            return {"id": pending.id, "transcript": pending.transcript,
-                    "tool": pending.plan.tool_name,
-                    "arguments": pending.plan.arguments,
-                    "risk": pending.safety.risk_level,
-                    "kind": pending.kind,
-                    "message": pending.message or pending.plan.confirmation_message
-                               or pending.safety.reason}
+        return self.confirm.payload()
 
     def approve_pending(self, action_id=None) -> None:
         pending = self._take_pending(action_id)
@@ -531,13 +556,17 @@ class CommandPipeline:
             return
 
         if pending.kind == "fuzzy" and safety.requires_confirmation:
+            # "Did you mean X?" was only the clarification — the action itself
+            # still has to clear the real safety confirmation.
             next_id = self._set_pending(plan, safety, transcript)
+            if next_id is None:
+                self.ui.show_info(DEFERRED_MESSAGE)
+                return
             self.ui.set_state("waiting_confirmation")
             self.ui.ask_confirmation(next_id, transcript, plan, safety,
                                      kind="safety", message="")
-            warn = plan.confirmation_message or \
-                "This one needs your OK — check the screen for me?"
-            self.speech.speak_async(warn)
+            self.speech.speak_async(self.confirm.summary())
+            self.confirm.begin_listening()
             return
 
         def worker():

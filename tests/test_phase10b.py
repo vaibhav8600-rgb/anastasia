@@ -121,8 +121,8 @@ def test_dangerous_terminal_from_live_blocked_before_confirmation():
 
 def test_blocked_and_unknown_tools_from_live_are_refused():
     bridge, agent, _, responses = make_bridge(confirm=lambda p, s: True)
-    bridge.handle_tool_call("send_email", {"to": "x@y.z"}, "c4")     # BLOCKED
-    bridge.handle_tool_call("fly_to_moon", {}, "c5")                 # unknown
+    bridge.handle_tool_call("make_payment", {"amount": "500"}, "c4")  # BLOCKED
+    bridge.handle_tool_call("fly_to_moon", {}, "c5")                  # unknown
     assert agent.executed == []
     assert all(r[2]["success"] is False for r in responses)
     assert len(responses) == 2              # the model still gets an answer

@@ -61,6 +61,10 @@ _DEFAULT_MIGRATIONS = {
     "max_record_seconds": (30, 8),
     "stt_language": ("auto", "en"),
     "gemini_live_voice": ("Kore", "Sulafat"),   # 10D: the warm HD voice
+    # 11B: a long-edge cap of 1280 squashed dual-monitor grabs to ~360px tall.
+    "vision_max_edge": (1280, 2600),
+    # gemini-2.5-flash now 404s for newly-issued keys (verified 2026-07).
+    "vision_cloud_model": ("gemini-2.5-flash", "gemini-3-flash-preview"),
 }
 
 
@@ -184,6 +188,17 @@ class AppConfig(BaseModel):
     # Safety / behavior
     confirmation_mode: str = "strict"    # "strict" | "normal"
     max_type_text_no_confirm: int = 500
+    # Voice approval (11A). A pending confirmation auto-cancels after this
+    # many seconds. Destructive-tier actions additionally demand the strong
+    # phrase ("Anna approve"); a casual "yes" is refused.
+    confirmation_timeout_s: float = 30.0
+    # Reopen the mic automatically while a confirmation card is up, so
+    # "approve"/"cancel" can be spoken without pressing push-to-talk. Only
+    # applies in continuous hands-free mode. OFF by default: it opens the
+    # microphone on its own, and 9C deliberately never grabs the mic while
+    # waiting for approval. Push-to-talk and the voice-confirm button always
+    # accept spoken approval regardless of this setting.
+    confirmation_voice_listen: bool = False
 
     # UI
     animation_quality: str = "medium"    # "low" | "medium" | "high"
@@ -197,6 +212,62 @@ class AppConfig(BaseModel):
     # timeout. Persists across restarts. Half-duplex + barge-in still apply.
     hands_free: bool = False
     hands_free_idle_timeout_s: float = 45.0
+
+    # Vision (11B). Capture is OFF until explicitly triggered — Anna never
+    # watches silently. Mode A (on-demand single frame) runs only on a trigger
+    # phrase; Mode B (low-frequency watching) must be started explicitly and
+    # auto-stops when idle. Frames are processed once and discarded.
+    screen_watch_interval_s: float = 1.5     # Mode B: one frame per N seconds
+    screen_watch_idle_timeout_s: float = 120.0
+    # Downscale budget before OCR/transport. An AREA budget, not a long-edge
+    # one: a dual 2560x1440 desktop is 5120px wide, and capping the long edge
+    # squashes it to ~360px tall — unreadable. max_edge is only a backstop.
+    vision_max_pixels: int = 1_600_000
+    vision_max_edge: int = 2600
+    vision_save_captures: bool = False       # raw frames are never kept unless on
+    ocr_backend: str = "auto"                # auto | tesseract | off
+    tesseract_exe: str = ""                  # path to tesseract.exe if not on PATH
+    # OCR of a dense desktop is intrinsically slow (~15-20s at full res), so
+    # Anna downscales HARD before running and caps the time. The fast pass
+    # drives the sensitive-content scan; the full pass is used only in
+    # local-only mode (cloud vision describes a screen faster and better).
+    ocr_fast_pixels: int = 500_000
+    ocr_max_pixels: int = 1_100_000
+    ocr_timeout_s: int = 8
+    camera_device: str = ""              # browser deviceId; empty = default cam
+    camera_preview: bool = True          # show a live self-view while capturing
+    # In a Live conversation, send the camera frame straight into the session
+    # so Anna sees it natively (faster, no separate call) — still one frame.
+    live_native_camera: bool = True
+    # Cloud vision (separate, explicit consent — screen/camera frames may be
+    # sent to Gemini). Off by default; local OCR needs no consent.
+    cloud_vision_consent: bool = False
+    # Verified live 2026-07: gemini-2.5-flash now 404s for new keys and
+    # gemini-3.5-flash/gemini-flash-latest were 503. This one answered
+    # correctly. Preview tier — expect churn; editable in Settings.
+    vision_cloud_model: str = "gemini-3-flash-preview"
+
+    # App control (11C). Structured backends first; vision coordinates are a
+    # last resort and are always confirmation-gated.
+    # Attach to YOUR running browser so Anna acts on the real logged-in tab:
+    #   chrome.exe --remote-debugging-port=9222
+    browser_cdp_url: str = "http://localhost:9222"
+    # Resolved click targets whose accessible name matches any of these ALWAYS
+    # require confirmation, whatever risk the plan claimed. Enforced in the
+    # safety validator, so a misfiring planner cannot bypass it.
+    destructive_targets: List[str] = Field(
+        default_factory=lambda: ["send", "submit", "pay", "delete", "confirm",
+                                 "install", "post", "purchase", "transfer",
+                                 "approve"])
+
+    # Guided multi-step tasks (11D). After this many steps without finishing,
+    # Anna pauses and checks in rather than running an unbounded chain.
+    task_max_steps_before_checkin: int = 5
+
+    # Email (11E). "auto" -> Gmail in the browser if a browser is your default,
+    # else the desktop client (Outlook) via mailto. No API/OAuth required;
+    # Anna opens a pre-filled draft and the send is a confirmed click.
+    email_provider: str = "auto"         # auto | gmail | outlook
 
     # Tools
     default_browser: str = ""            # empty = system default; or alias key e.g. "chrome"

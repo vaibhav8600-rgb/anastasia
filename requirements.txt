@@ -31,3 +31,14 @@ pytest>=8.0
 
 # Optional — natural Kokoro voice (also download model + voices in Settings):
 # kokoro-onnx>=0.5
+
+# Optional — local OCR so Anna can READ your screen with nothing leaving the
+# PC (11B). Needs the Tesseract binary as well:
+#   winget install UB-Mannheim.TesseractOCR
+# pytesseract>=0.3.10
+
+# App control (11C). UIA drives native Windows apps; Playwright drives the
+# browser (attaches to YOUR running Chrome/Edge over CDP — no bundled
+# Chromium download needed, so skip `playwright install`):
+uiautomation>=2.0.20       # native Windows control tree (UIA)
+playwright>=1.40           # browser DOM control over the DevTools Protocol

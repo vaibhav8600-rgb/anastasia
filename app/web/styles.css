@@ -317,6 +317,33 @@ body.live-streaming #mic-btn {
   border-color: #a78bfa;
   box-shadow: 0 0 18px rgba(167, 139, 250, .55);
 }
+/* 11B vision: a persistent badge for the whole time anything is captured. */
+#screen-vision-badge {
+  margin-top: 10px; font-size: 12px; font-weight: 600;
+  color: #7dd3fc; letter-spacing: .3px;
+}
+#camera-badge {
+  margin-top: 10px; font-size: 12px; font-weight: 700;
+  color: #fca5a5; letter-spacing: .3px; animation: pulse 1s infinite;
+}
+/* watching: the whole app gets a cyan border — impossible to miss */
+body.screen-vision {
+  box-shadow: inset 0 0 0 2px rgba(125, 211, 252, .55);
+}
+body.camera-on { box-shadow: inset 0 0 0 3px rgba(248, 113, 113, .75); }
+/* 11B self-preview: a small live self-view so you see what the camera sees */
+#camera-preview {
+  position: fixed; right: 22px; bottom: 96px; z-index: 60;
+  width: 260px; border-radius: 12px; overflow: hidden;
+  border: 2px solid #fca5a5;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, .5); background: #000;
+}
+#camera-preview-video { display: block; width: 100%; height: auto;
+  transform: scaleX(-1); }   /* mirror, like a selfie cam */
+#camera-preview .camera-preview-label {
+  position: absolute; top: 6px; left: 8px; font-size: 11px; font-weight: 700;
+  color: #fca5a5; text-shadow: 0 1px 3px #000; letter-spacing: .3px;
+}
 #stt-interim {
   margin-top: 6px; min-height: 20px; max-width: 80%;
   font-size: 15px; color: var(--text-mid); font-style: italic; opacity: .7;
@@ -422,9 +449,28 @@ body.stt-streaming #mic-btn.recording::before {
   border-color: rgba(34, 211, 238, .4);
 }
 .confirm-card.fuzzy h4 { color: var(--cyan); }
-.confirm-actions { display: flex; gap: 8px; }
+.confirm-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .confirm-card.resolved { opacity: .45; }
 .confirm-card.resolved button { pointer-events: none; }
+/* 11A voice approval: phrase hint + expandable details + destructive tier */
+.confirm-card .confirm-hint {
+  font-size: 11.5px; color: var(--text-mid); opacity: .85; margin-bottom: 8px;
+}
+.confirm-card .confirm-hint b { color: var(--text-hi); font-weight: 600; }
+.confirm-card .confirm-details {
+  margin: 0 0 8px; font-size: 11.5px;
+  border-left: 2px solid var(--border-glow); padding-left: 8px;
+}
+.confirm-card .confirm-details td { padding: 1px 8px 1px 0; vertical-align: top; }
+.confirm-card.strong { border-color: rgba(248, 113, 113, .55); }
+.confirm-card.strong h4 { color: var(--error); }
+/* 11C: exactly what will be clicked, plus a crop when it was only guessed */
+.confirm-card .confirm-target { font-size: 12px; margin: 6px 0 8px; }
+.confirm-card .confirm-guess { color: var(--warn); margin-top: 4px; }
+.confirm-card .confirm-crop {
+  display: block; margin-top: 6px; max-width: 100%; border-radius: 6px;
+  border: 2px solid var(--warn);
+}
 
 /* ============================ bottom bar ============================ */
 #bottombar {

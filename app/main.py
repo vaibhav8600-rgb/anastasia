@@ -18,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.agent.confirmation_manager import Outcome
 from app.agent.conversation import Conversation
 from app.agent.devlog import devlog
 from app.agent.history import History
@@ -30,8 +31,9 @@ from app.voice.recorder import (MicrophoneError, Recorder,
                                 microphone_dropdown_state)
 from app.voice.speech_output import SpeechOutput
 
-APPROVE_WORDS = {"approve", "approved", "yes", "yeah", "yep", "haan", "confirm", "go ahead", "do it"}
-CANCEL_WORDS = {"cancel", "no", "nope", "stop", "abort", "never mind", "nevermind"}
+# Approval/cancel phrase parsing lives in the confirmation manager (11A) so
+# every entry point — typed, voice turn, and the voice-confirm button —
+# shares one set of rules, including the strong phrase for destructive tiers.
 
 
 def _confidence_is_low(confidence, thresholds=None) -> bool:
@@ -80,6 +82,19 @@ class Controller:
         self._live = None                  # active Gemini Live conversation
         self._live_fallback_noted = False  # one honest info line per session
 
+        # Vision (11B). Constructed but dormant: nothing captures until an
+        # explicit trigger phrase, and the camera opener is only wired once
+        # the webview exists.
+        from app.vision.service import VisionService
+        self.vision = VisionService(
+            self.config,
+            dispatch=self._vision_dispatch,
+            stop_live=self._stop_live_for_privacy)
+        self.vision.camera.opener = self._open_browser_camera
+        self.agent.vision = self.vision
+        self._camera_frames = {}           # request_id -> [Event, data_url]
+        self._camera_seq = 0
+
         self.wake_listener = None
         self._wake_warned = False          # one clean warning per session
         self._mic_lock = threading.Lock()
@@ -106,7 +121,9 @@ class Controller:
 
         self.pipeline = CommandPipeline(
             config=self.config, agent=self.agent, history=self.history,
-            ui=self, speech=self.speech, cancel_recording=self.cancel_recording)
+            ui=self, speech=self.speech, cancel_recording=self.cancel_recording,
+            confirm_timeout_seconds=float(
+                getattr(self.config, "confirmation_timeout_s", 30.0)))
         if hasattr(self.agent, "brain"):
             # live Brain chip updates on failover / circuit transitions
             self.agent.brain.on_state_change = self._on_brain_state
@@ -178,15 +195,54 @@ class Controller:
     def hide_confirmation(self) -> None:
         self._ui(self.ui.confirm_panel.hide)
 
+    def show_confirmation_details(self, payload: dict) -> None:
+        """11A.2 'show details' — expand the pending card in place."""
+        if hasattr(self.ui, "dispatch"):
+            self.ui.dispatch("confirm_details", payload)
+
     def _on_speaking_changed(self, active: bool) -> None:
         if active:
             self.set_state("speaking")
-        elif not self.pipeline.is_processing_command and self.pipeline.pending is None:
-            if self._hands_free_active:
-                # Continuous loop: the instant Anna finishes, reopen the mic.
-                self._hands_free_continue()
-            else:
-                self.set_state("ready")
+            return
+        if self.pipeline.is_processing_command:
+            return
+        if self.pipeline.pending is not None:
+            # 11A.3: a card is up. Don't start a NEW turn — but in hands-free
+            # reopen the mic so "approve"/"cancel" can actually be spoken
+            # (listening_for_confirmation). PTT users press the hotkey.
+            self._listen_for_confirmation()
+            return
+        if self._hands_free_active:
+            # Continuous loop: the instant Anna finishes, reopen the mic.
+            self._hands_free_continue()
+        else:
+            self.set_state("ready")
+
+    def _listen_for_confirmation(self) -> None:
+        """Reopen the mic to hear the approve/cancel phrase while a
+        confirmation card is pending. Opt-in (`confirmation_voice_listen`),
+        because it opens the microphone on its own. Hands-free only: in PTT
+        mode the user presses the hotkey, and in a Gemini Live session the
+        mic is already open (tapping it there would end the conversation)."""
+        if not getattr(self.config, "confirmation_voice_listen", False):
+            return
+        if not self._hands_free_active or self._live is not None:
+            return
+
+        def worker():
+            import time as _t
+            from app.voice import audio_gate
+            _t.sleep(audio_gate.TAIL_SECONDS + 0.1)   # let the echo tail clear
+            if not self._hands_free_active or self._live is not None:
+                return
+            if not self.pipeline.confirm.has_pending():
+                return          # already approved/cancelled/expired
+            if self.recorder.recording or self.speech.speaking \
+                    or self.pipeline.is_processing_command:
+                return
+            self._ui(lambda: self.toggle_mic("voice"))
+        threading.Thread(target=worker, daemon=True,
+                         name="anna-confirm-listen").start()
 
     def arm_followup(self) -> None:
         """Pipeline hook (kept for compatibility). Continuous hands-free (9C)
@@ -746,6 +802,66 @@ class Controller:
         else:
             self.set_state("ready")
 
+    # ----------------------------------------------------- vision (11B)
+    def _vision_dispatch(self, event: str, payload: dict) -> None:
+        """Screen-vision / camera indicators. These are the only signal the
+        user needs that something is being captured, so they must always fire."""
+        if hasattr(self.ui, "dispatch"):
+            self.ui.dispatch(event, payload)
+
+    def _stop_live_for_privacy(self) -> bool:
+        """privacy_mode also kills any Gemini Live audio session (11B.5)."""
+        if self._live is None:
+            return False
+        self._end_live_conversation("privacy mode")
+        return True
+
+    def _open_browser_camera(self):
+        """Mira's pattern: the WebView opens getUserMedia, draws ONE frame,
+        stops every track, and hands back a data URL."""
+        from app.vision.camera import BrowserCameraStream
+        if not hasattr(self.ui, "dispatch"):
+            from app.vision import CameraUnavailable
+            raise CameraUnavailable("No window to open the camera in.")
+        self._camera_seq += 1
+        request_id = self._camera_seq
+        done = threading.Event()
+        self._camera_frames[request_id] = [done, ""]
+
+        def request(timeout_s: float) -> str:
+            self.ui.dispatch("camera_capture", {
+                "id": request_id,
+                "device": getattr(self.config, "camera_device", "") or "",
+                "preview": bool(getattr(self.config, "camera_preview", True))})
+            if not done.wait(timeout_s):
+                self._camera_frames.pop(request_id, None)
+                from app.vision import CameraUnavailable
+                raise CameraUnavailable(
+                    "The camera didn't respond — check the window's camera "
+                    "permission.")
+            return self._camera_frames.pop(request_id, [None, ""])[1]
+
+        return BrowserCameraStream(
+            request, stop_fn=lambda: self.ui.dispatch("camera_stop", {}))
+
+    def camera_frame(self, request_id, data_url: str) -> None:
+        """js_api: the single frame the browser captured. Raw pixels are never
+        logged — only that a frame of N bytes arrived."""
+        entry = self._camera_frames.get(int(request_id))
+        if entry is None:
+            return
+        entry[1] = str(data_url or "")
+        devlog.log(f"Vision: camera frame received ({len(entry[1])} b64 chars)")
+        entry[0].set()
+
+    def privacy_mode(self) -> None:
+        """js_api / voice: the one switch that stops screen watching, the
+        camera, and any Live audio session."""
+        stopped = self.vision.privacy_mode()
+        parts = [name for name, was_on in stopped.items() if was_on]
+        self.show_info("Privacy mode — " + (", ".join(parts) + " stopped."
+                                            if parts else "nothing was running."))
+
     def _emit_live_indicator(self, active: bool) -> None:
         """Unmistakable 'audio is streaming to Google' badge (10C; 10D adds
         the running session-cost estimate to it)."""
@@ -954,8 +1070,14 @@ class Controller:
         self.pipeline.cancel_pending()
 
     def voice_confirm(self) -> None:
-        """Record ~3s, transcribe, look for approve/cancel keywords."""
+        """Record ~3s and route the raw utterance through the confirmation
+        manager (11A). It — not this method — decides approve/cancel/repeat/
+        details, and enforces the strong phrase on destructive-tier actions,
+        so this button can never become a softer approval path."""
         def worker():
+            if not self.pipeline.confirm.has_pending():
+                self.show_info("There's nothing waiting for your approval.")
+                return
             self.set_state("listening", "Say “approve” or “cancel”…")
             try:
                 self.recorder.start()
@@ -967,15 +1089,11 @@ class Controller:
                 self.show_error("Voice confirm didn't work — use the buttons.")
                 self.set_state("waiting_confirmation")
                 return
-            answer = text.lower().strip(" .,!?")
             devlog.log(f"Voice confirm heard: {text!r}")
-            if any(w in answer for w in APPROVE_WORDS):
-                self._ui(self.approve_pending)
-            elif any(w in answer for w in CANCEL_WORDS):
-                self._ui(self.cancel_pending)
-            else:
-                self.show_info("I didn't catch approve or cancel — use the buttons.")
-                self.set_state("waiting_confirmation")
+            outcome = self.pipeline.handle_confirmation_utterance(text)
+            if outcome in (Outcome.APPROVED, Outcome.CANCELLED):
+                return          # the pipeline already resolved + reset state
+            self.set_state("waiting_confirmation")
         threading.Thread(target=worker, daemon=True).start()
 
     # ------------------------------------------------------- wake word
@@ -1229,7 +1347,20 @@ class Controller:
                 "live_idle_close_s": c.live_idle_close_s,
                 "live_monthly_cap_usd": c.live_monthly_cap_usd,
                 "live_month_spend": self._live_month_spend(),
+                # Vision (11B) — capture is trigger-only; cloud is opt-in.
+                "cloud_vision_consent": c.cloud_vision_consent,
+                "vision_cloud_model": c.vision_cloud_model,
+                "screen_watch_interval_s": c.screen_watch_interval_s,
+                "screen_watch_idle_timeout_s": c.screen_watch_idle_timeout_s,
+                "vision_save_captures": c.vision_save_captures,
+                "camera_device": c.camera_device,
+                "camera_preview": c.camera_preview,
+                "ocr_ready": self._ocr_ready(),
             })
+
+    def _ocr_ready(self) -> bool:
+        from app.vision.ocr import ocr_status
+        return ocr_status(self.config)[0]
 
     def _masked_groq_key(self) -> str:
         from app.llm.providers import mask_key
@@ -1276,6 +1407,11 @@ class Controller:
         "gemini_live_voice": str, "live_affective_dialog": bool,
         "live_price_in_per_min": float, "live_price_out_per_min": float,
         "live_idle_close_s": float, "live_monthly_cap_usd": float,
+        "cloud_vision_consent": bool, "vision_cloud_model": str,
+        "screen_watch_interval_s": float, "screen_watch_idle_timeout_s": float,
+        "vision_save_captures": bool, "confirmation_voice_listen": bool,
+        "confirmation_timeout_s": float,
+        "camera_device": str, "camera_preview": bool, "live_native_camera": bool,
     }
     _SETTINGS_CHOICES = {
         "animation_quality": {"low", "medium", "high"},
@@ -1506,6 +1642,11 @@ class Controller:
             if self._live is not None:
                 # never leave a billed Live session behind (10A.3)
                 self._end_live_conversation("app closing")
+            try:
+                self.vision.stop_watching("app closing")   # never watch on past exit
+                self.vision.camera.stop()
+            except Exception:
+                pass
             self._hands_free_active = False
             if self._idle_timer is not None:
                 self._idle_timer.cancel()

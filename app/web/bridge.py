@@ -103,11 +103,21 @@ class UIBridge:
              on_approve=None, on_cancel=None, on_voice=None,
              kind="safety", message="") -> None:
         """Render a safety approval or neutral fuzzy-confirmation card."""
+        from app.agent.confirmation_manager import requires_strong_approval
+        arguments = {k: v for k, v in (plan.arguments or {}).items()
+                     if not str(k).startswith("_")}
+        resolved = (plan.arguments or {}).get("_resolved")
         self.dispatch("confirm_request", {
             "id": action_id, "transcript": transcript,
-            "tool": plan.tool_name, "arguments": plan.arguments,
+            "tool": plan.tool_name, "arguments": arguments,
             "risk": safety.risk_level,
             "kind": kind,
+            # 11C: what exactly will be clicked, and a picture of it when the
+            # target was only a vision guess.
+            "target": resolved if isinstance(resolved, dict) else None,
+            # 11A: destructive-tier cards say so, and name the phrase that
+            # unlocks them — a casual "yes" won't be accepted.
+            "strong_required": requires_strong_approval(plan, safety),
             "message": message or plan.confirmation_message or safety.reason
                        or "Do you want me to go ahead?",
         })
@@ -183,6 +193,15 @@ class JsApi:
     def live_consent(self, accepted) -> None:
         """Resolve the first-run Gemini Live consent card (10D)."""
         self._controller.live_consent(bool(accepted))
+
+    # -- vision (11B) ------------------------------------------------------
+    def camera_frame(self, request_id, data_url) -> None:
+        """The one frame getUserMedia captured, as a data URL."""
+        self._controller.camera_frame(request_id, data_url)
+
+    def privacy_mode(self) -> None:
+        """Kill switch: screen watching + camera + Live audio session."""
+        self._controller.privacy_mode()
 
     def recheck(self) -> None:
         if self._bridge._on_recheck:
