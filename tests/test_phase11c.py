@@ -273,6 +273,57 @@ def test_password_field_detected_via_uia_skipped_or_flagged():
     assert "hunter2" not in text            # never read, never logged
 
 
+# ---- Playwright must survive Anna's threading ------------------------------------------------
+
+def test_playwright_driver_is_one_shared_worker_thread():
+    """Verified end-to-end against a real Chrome: Playwright's sync API is bound
+    to the thread that CREATED it, and a SECOND driver in the same process
+    conflicts with the first. Anna trips both — the validator resolves on one
+    thread while tools execute on another, and each built its own backend — so
+    every call after the first silently returned None and she fell back to
+    guessing at pixels. One driver, one thread, all calls marshalled."""
+    import threading
+
+    from app.control import playwright_backend as pb
+
+    calls = []
+
+    class FakeWorker:
+        def __init__(self, cdp_url):
+            calls.append(("created", cdp_url))
+            self.thread_id = None
+
+        def call(self, fn, timeout=30.0):
+            # every call is executed by the ONE worker, whoever asked
+            calls.append(("call", threading.get_ident()))
+            return "ok"
+
+        def shutdown(self):
+            calls.append(("shutdown", None))
+
+    pb.shutdown_browser()                       # clean slate
+    monkey = pb._PlaywrightWorker
+    pb._PlaywrightWorker = FakeWorker
+    try:
+        a = pb.PlaywrightBackend(CFG)
+        b = pb.PlaywrightBackend(CFG)           # a SECOND backend instance
+
+        a.read_page_text()
+        b.read_page_text()                      # ...must reuse the same driver
+        done = []
+        t = threading.Thread(target=lambda: done.append(b.read_page_text()))
+        t.start()
+        t.join()                                # ...even from another thread
+
+        created = [c for c in calls if c[0] == "created"]
+        assert len(created) == 1, "a second Playwright driver was started"
+        assert done == ["ok"], "a cross-thread call failed"
+        assert len([c for c in calls if c[0] == "call"]) == 3
+    finally:
+        pb._PlaywrightWorker = monkey
+        pb.shutdown_browser()
+
+
 # ---- the confirmation card carries the target ---------------------------------------------
 
 def test_confirmation_card_shows_target_and_hides_internal_args():

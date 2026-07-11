@@ -1647,6 +1647,13 @@ class Controller:
                 self.vision.camera.stop()
             except Exception:
                 pass
+            try:
+                # Release the browser driver. Detaches only — your own Chrome
+                # keeps running, with its tabs intact.
+                from app.control.playwright_backend import shutdown_browser
+                shutdown_browser()
+            except Exception:
+                pass
             self._hands_free_active = False
             if self._idle_timer is not None:
                 self._idle_timer.cancel()
