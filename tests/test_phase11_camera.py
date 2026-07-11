@@ -153,9 +153,28 @@ def test_model_cannot_open_the_camera_app_while_anna_uses_the_webcam():
     assert engine._skip_check("open_app", {"app_name": "chrome"}) is None
 
 
+def test_camera_app_guard_holds_when_the_model_calls_first():
+    """RACE from real logs: open_app('camera') was LOGGED BEFORE our own
+    camera_look short-circuit, so the guard hadn't armed and the Camera app
+    launched anyway. The guard must also read the user's words."""
+    engine, agent, _ = _camera_engine()
+    # the user's words have arrived, but the short-circuit hasn't fired yet
+    engine._user_buf = "Can you open the camera and tell me what you see?"
+    assert not engine._recent_local            # nothing run locally yet
+    msg = engine._skip_check("open_app", {"app_name": "camera"})
+    assert msg is not None, "the Camera app could still steal the webcam"
+    assert "do not open the camera app" in msg.lower()
+
+
 def test_open_app_camera_is_allowed_when_anna_is_not_using_the_webcam():
     """Outside a camera look, "open the Camera app" is a normal request."""
     engine, agent, _ = _camera_engine()
+    engine._user_buf = ""
+    engine._last_user_text = "open the camera app please"
+    # this phrasing is NOT a camera_look; the rule router says so, and the
+    # fake agent's rule always returns camera_look, so use a real router here
+    from app.agent.router import match_rule
+    agent.rule = lambda t: match_rule(t, engine.config)
     assert engine._skip_check("open_app", {"app_name": "camera"}) is None
 
 

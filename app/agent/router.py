@@ -154,8 +154,13 @@ def match_rule(raw: str, config, memory=None) -> Optional[ActionPlan]:
     # phrase: "what do you see on the screen" opened the webcam otherwise.
     means_screen = re.search(r"\b(screen|monitor|display|desktop|window|page|tab)\b", t)
     means_camera = re.search(r"\b(camera|webcam)\b", t)
-    if (means_camera and re.search(r"\b(look|see|through|use|open|check|show)\b", t)) \
-            or (re.match(r"what do you see\b", t) and not means_screen):
+    # "open the camera APP" means launch Windows Camera; "open the camera"
+    # means Anna should look through it. Keep those apart — routing the former
+    # to camera_look leaves no way to actually open the app.
+    wants_camera_app = re.search(r"\b(camera|webcam)\s+app\b", t)
+    if not wants_camera_app and (
+            (means_camera and re.search(r"\b(look|see|through|use|open|check|show)\b", t))
+            or (re.match(r"what do you see\b", t) and not means_screen)):
         return plan("camera_look", args=dict(extra),
                     msg="Taking a quick look through the camera.")
     if re.search(r"\b(watch|keep an eye on)\b.*\bscreen\b", t) \

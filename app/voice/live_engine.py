@@ -77,6 +77,7 @@ class LiveEngine:
         self._player_thread = None
         self._user_buf = ""
         self._anna_buf = ""
+        self._last_user_text = ""
         self._turn_rule_done = False
         self._recent_local = None      # (tool_name, monotonic) rule dedup
         self._healthy_reported = False
@@ -277,6 +278,7 @@ class LiveEngine:
         text = self._user_buf.strip()
         self._user_buf = ""
         if text:
+            self._last_user_text = text     # the camera guard reads this
             self.show_user(text)
 
     def _flush_anna(self) -> None:
@@ -439,27 +441,48 @@ class LiveEngine:
             "what you see — the person, objects and setting — warmly and "
             "briefly. Don't try to name or identify anyone.")
 
+    def _wants_camera_look(self) -> bool:
+        """Is this turn a 'look through the camera' request? Checked from the
+        user's own words as well as the recent local run, because the model's
+        tool call can BEAT our short-circuit (it did: open_app logged before
+        camera_look, so the guard hadn't armed and the Camera app launched)."""
+        recent = self._recent_local
+        if recent and recent[0] == "camera_look" \
+                and time.monotonic() - recent[1] < RULE_DEDUP_WINDOW_S:
+            return True
+        text = (self._user_buf or "").strip() or self._last_user_text
+        if not text:
+            return False
+        try:
+            plan = self.agent.plan_rule(text)
+        except Exception:
+            return False
+        return plan is not None and plan.tool_name == "camera_look"
+
     def _skip_check(self, name: str, args: dict):
         """Bridge hook: dedup a model tool call that repeats what the local
         rule router already did this turn — by family, so the model's habitual
         extra take_screenshot after a look_at_screen is skipped too."""
-        recent = self._recent_local
-        if not recent or time.monotonic() - recent[1] >= RULE_DEDUP_WINDOW_S:
-            return None
-
         # "Open the camera and tell me what you see" makes the model ALSO fire
         # open_app("camera") — which launches the Windows Camera app, and that
         # app SEIZES the webcam, so Anna's own capture comes back a flat grey
         # placeholder. Anna already has the camera directly; refuse the launch.
-        if recent[0] == "camera_look" and name == "open_app":
+        # Checked BEFORE the _recent_local gate, so it holds even when the
+        # model's call arrives first.
+        if name == "open_app":
             app = str((args or {}).get("app_name") or (args or {}).get("name")
                       or (args or {}).get("app") or "").lower()
-            if any(word in app for word in ("camera", "webcam")):
+            if any(word in app for word in ("camera", "webcam")) \
+                    and self._wants_camera_look():
                 devlog.log("[gemini_live] refused open_app(camera) — Anna is "
                            "already using the webcam directly.")
                 return ("Anna looks through the webcam HERSELF — do not open the "
                         "Camera app, it would take the camera away from her and "
                         "she'd only see a blank image. She already has the photo.")
+
+        recent = self._recent_local
+        if not recent or time.monotonic() - recent[1] >= RULE_DEDUP_WINDOW_S:
+            return None
 
         if _tool_family(recent[0]) == _tool_family(name):
             if _tool_family(name) == "screen_snapshot":

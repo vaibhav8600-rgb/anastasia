@@ -131,19 +131,28 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
    warmed up yet returns pure black, and drawing the very first available
    frame reliably captures exactly that. Sample a small grid; we only need to
    know whether *anything* varies. */
-function canvasIsBlank(canvas) {
+/* How much real detail a frame holds (luminance standard deviation).
+
+   A live view of a room is busy (typically 30+). A warming-up sensor or an
+   unconnected virtual camera hands back a grey card with almost none. The old
+   check only rejected a PERFECTLY flat frame, so it happily grabbed the grey
+   warm-up frame the moment it had the faintest gradient. */
+function canvasDetail(canvas) {
   const probe = document.createElement("canvas");
   probe.width = probe.height = 32;
-  probe.getContext("2d").drawImage(canvas, 0, 0, 32, 32);
-  const px = probe.getContext("2d").getImageData(0, 0, 32, 32).data;
-  let min = 255, max = 0;
+  const pctx = probe.getContext("2d");
+  pctx.drawImage(canvas, 0, 0, 32, 32);
+  const px = pctx.getImageData(0, 0, 32, 32).data;
+  const lums = [];
   for (let i = 0; i < px.length; i += 4) {
-    const lum = (px[i] + px[i + 1] + px[i + 2]) / 3;
-    if (lum < min) min = lum;
-    if (lum > max) max = lum;
+    lums.push((px[i] + px[i + 1] + px[i + 2]) / 3);
   }
-  return max - min < 3;
+  const mean = lums.reduce((a, b) => a + b, 0) / lums.length;
+  const varr = lums.reduce((a, b) => a + (b - mean) ** 2, 0) / lums.length;
+  return Math.sqrt(varr);
 }
+
+const MIN_DETAIL = 12;   // below this it's a grey card, not a view of the world
 
 /* Wait for a frame the compositor has actually decoded, not just "metadata
    is ready". requestVideoFrameCallback fires on a real presented frame. */
@@ -166,8 +175,21 @@ async function captureCameraFrame(requestId, device, preview) {
     // unconnected Camo/OBS/DroidCam device is often the system default and
     // hands back a flat grey card.
     const chosen = device || await pickRealCamera();
-    const constraints = { video: chosen ? { deviceId: { ideal: chosen } } : true };
-    cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
+    // `exact` so the pick is actually honoured (`ideal` lets the browser fall
+    // back to the very default we're trying to avoid). Fall back gracefully if
+    // that specific camera can't be opened.
+    if (chosen) {
+      try {
+        cameraStream = await navigator.mediaDevices.getUserMedia(
+          { video: { deviceId: { exact: chosen } } });
+      } catch (err) {
+        console.warn("camera: chosen device unavailable, using default", err);
+        cameraStream = null;
+      }
+    }
+    if (!cameraStream) {
+      cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
+    }
     // Reuse the on-screen preview <video> as the capture source when showing
     // the self-view, else a detached element.
     const video = (shown && $("#camera-preview-video"))
@@ -185,22 +207,31 @@ async function captureCameraFrame(requestId, device, preview) {
     canvas.height = video.videoHeight || 480;
     const ctx = canvas.getContext("2d");
 
-    // External/USB webcams can emit black for 1-3s after opening (auto-exposure
-    // ramp). Give it a short warm-up, then keep pulling frames until one has
-    // real content, up to ~6s. Only fall back to a black frame if it never
-    // produces one — the Python side then retries with a fresh open.
+    // Webcams emit a black or grey frame for the first 1-3s while exposure
+    // ramps. Keep pulling frames until one holds REAL detail, and hang on to
+    // the best frame seen — so even if it never fully wakes we send the most
+    // informative frame we got, not the greyest.
     await sleep(350);
-    const deadline = Date.now() + 6000;
+    const deadline = Date.now() + 8000;
+    let best = "", bestDetail = -1;
     do {
       await nextVideoFrame(video);
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      if (!canvasIsBlank(canvas)) break;
+      const detail = canvasDetail(canvas);
+      if (detail > bestDetail) {
+        bestDetail = detail;
+        best = canvas.toDataURL("image/jpeg", 0.85);
+      }
+      if (detail >= MIN_DETAIL) break;      // a real view of the world
       await sleep(120);
     } while (Date.now() < deadline);
 
-    dataUrl = canvas.toDataURL("image/jpeg", 0.85);
-    // Linger a moment so you actually SEE the self-view, then tear it down.
-    if (shown) await sleep(1000);
+    dataUrl = best;
+    if (bestDetail < MIN_DETAIL) {
+      console.warn("camera: no detailed frame (best detail", bestDetail, ")");
+    }
+    // Linger so you actually SEE the self-view, then tear it down.
+    if (shown) await sleep(2000);
     video.pause();
     if (!shown) video.srcObject = null;
   } catch (err) {
@@ -224,17 +255,35 @@ function isVirtualCam(label) {
   return VIRTUAL_CAM_HINTS.some(h => l.includes(h));
 }
 
-/* Pick a real webcam when the user hasn't chosen one. Returns "" if we can't
-   tell (no labels until camera permission has been granted once). */
+let resolvedCameraId = null;   // cached pick — don't re-probe every capture
+
+/* Pick a real webcam when the user hasn't chosen one.
+
+   Device LABELS are hidden until camera permission has been granted at least
+   once — so on a cold start every camera is nameless and we cannot tell a real
+   webcam from a virtual one. That's the chicken-and-egg that kept selecting an
+   unconnected Camo (grey card). Open any camera briefly to unlock the labels,
+   then choose properly. */
 async function pickRealCamera() {
+  if (resolvedCameraId !== null) return resolvedCameraId;
+  let cams = [];
   try {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const cams = devices.filter(d => d.kind === "videoinput");
-    const real = cams.find(c => c.label && !isVirtualCam(c.label));
-    return real ? real.deviceId : "";
+    let devices = await navigator.mediaDevices.enumerateDevices();
+    cams = devices.filter(d => d.kind === "videoinput");
+    if (cams.length && !cams.some(c => c.label)) {
+      const probe = await navigator.mediaDevices.getUserMedia({ video: true });
+      probe.getTracks().forEach(t => t.stop());     // unlock labels, free device
+      devices = await navigator.mediaDevices.enumerateDevices();
+      cams = devices.filter(d => d.kind === "videoinput");
+    }
   } catch (err) {
+    resolvedCameraId = "";
     return "";
   }
+  const real = cams.find(c => c.label && !isVirtualCam(c.label));
+  resolvedCameraId = real ? real.deviceId : "";
+  if (real) console.log("camera: using", real.label);
+  return resolvedCameraId;
 }
 
 /* Populate the Settings camera dropdown. Labels are only visible after camera
