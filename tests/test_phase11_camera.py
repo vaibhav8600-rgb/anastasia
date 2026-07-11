@@ -13,14 +13,22 @@ from tests.fakes import FakeAgent
 from tests.test_phase10c import live_config, make_live_engine
 
 
+def _scene(w=64, h=48):
+    """A varied image — a real camera view, not a flat placeholder."""
+    img = Image.new("RGB", (w, h))
+    for x in range(w):
+        for y in range(h):
+            img.putpixel((x, y), ((x * 4) % 256, (y * 5) % 256, (x + y) % 256))
+    return img
+
+
 class _FakeCamera:
     def __init__(self):
         self.captures = 0
 
     def capture_once(self):
         self.captures += 1
-        img = Image.new("RGB", (64, 48), (10, 60, 90))
-        return VisionFrame(image=img, source="camera", scope="camera",
+        return VisionFrame(image=_scene(), source="camera", scope="camera",
                            width=64, height=48)
 
 
@@ -124,6 +132,66 @@ def test_native_camera_failure_tells_the_model():
     said = " ".join(engine.session.sent_text).lower()
     assert "camera" in said and ("cover" in said or "couldn't" in said)
     assert not getattr(engine.session, "sent_images", None)
+
+
+# ---- the Windows Camera app must not steal the webcam --------------------------------
+
+def test_model_cannot_open_the_camera_app_while_anna_uses_the_webcam():
+    """From real logs: "open the camera and tell me what you see" made the
+    model ALSO call open_app('camera'), launching the Windows Camera app —
+    which seized the webcam, so Anna's own capture came back a flat grey card."""
+    engine, agent, _ = _camera_engine()
+    engine._on_input_transcript("Open the camera and tell me what you see.")
+
+    for app in ("camera", "Microsoft.Windows.Camera", "webcam", "Camera app"):
+        msg = engine._skip_check("open_app", {"app_name": app})
+        assert msg is not None, f"open_app({app!r}) was allowed to steal the camera"
+        assert "do not open the camera app" in msg.lower()
+
+    # a genuine, unrelated app launch is still allowed through
+    assert engine._skip_check("open_app", {"app_name": "notepad"}) is None
+    assert engine._skip_check("open_app", {"app_name": "chrome"}) is None
+
+
+def test_open_app_camera_is_allowed_when_anna_is_not_using_the_webcam():
+    """Outside a camera look, "open the Camera app" is a normal request."""
+    engine, agent, _ = _camera_engine()
+    assert engine._skip_check("open_app", {"app_name": "camera"}) is None
+
+
+# ---- a flat grey placeholder is never passed off as a photo ---------------------------
+
+def test_flat_grey_frame_is_detected():
+    from app.vision.camera import flatness, is_blank, looks_flat
+    grey = Image.new("RGB", (128, 96), (128, 128, 128))
+    assert looks_flat(grey)
+    assert flatness(grey) < 1.0
+    # a real-looking scene is not flat
+    scene = Image.new("RGB", (128, 96))
+    for x in range(128):
+        for y in range(96):
+            scene.putpixel((x, y), ((x * 2) % 256, (y * 5) % 256, (x + y) % 256))
+    assert not looks_flat(scene)
+
+
+def test_native_camera_refuses_a_flat_frame_and_says_why():
+    engine, agent, _ = _camera_engine()
+
+    def grey():
+        img = Image.new("RGB", (64, 48), (130, 130, 130))
+        img.putpixel((1, 1), (131, 131, 131))       # not perfectly uniform
+        return VisionFrame(image=img, source="camera", scope="camera",
+                           width=64, height=48)
+    agent.vision.camera.capture_once = grey
+
+    engine._on_input_transcript("Open the camera and tell me what you see.")
+    deadline = time.time() + 2
+    while not engine.session.sent_text and time.time() < deadline:
+        time.sleep(0.02)
+    said = " ".join(engine.session.sent_text).lower()
+    assert "blank" in said or "grey" in said
+    assert "settings" in said or "another app" in said   # actionable advice
+    assert not getattr(engine.session, "sent_images", None)  # grey never sent
 
 
 # ---- config -------------------------------------------------------------------------

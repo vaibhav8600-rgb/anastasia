@@ -162,7 +162,11 @@ async function captureCameraFrame(requestId, device, preview) {
   const box = $("#camera-preview");
   const shown = preview !== false && box;
   try {
-    const constraints = { video: device ? { deviceId: { ideal: device } } : true };
+    // No camera chosen? Prefer a REAL webcam over a virtual one — an
+    // unconnected Camo/OBS/DroidCam device is often the system default and
+    // hands back a flat grey card.
+    const chosen = device || await pickRealCamera();
+    const constraints = { video: chosen ? { deviceId: { ideal: chosen } } : true };
     cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
     // Reuse the on-screen preview <video> as the capture source when showing
     // the self-view, else a detached element.
@@ -208,6 +212,31 @@ async function captureCameraFrame(requestId, device, preview) {
   call("camera_frame", requestId, dataUrl);
 }
 
+/* Virtual "cameras" that show a grey placeholder when their phone/app isn't
+   connected — and are often the Windows default, which is why the capture came
+   back blank. Never auto-pick one; the user can still choose it explicitly. */
+const VIRTUAL_CAM_HINTS = ["camo", "virtual", "obs", "droidcam", "iriun",
+                           "manycam", "xsplit", "snap camera", "epoccam",
+                           "ivcam", "splitcam"];
+
+function isVirtualCam(label) {
+  const l = (label || "").toLowerCase();
+  return VIRTUAL_CAM_HINTS.some(h => l.includes(h));
+}
+
+/* Pick a real webcam when the user hasn't chosen one. Returns "" if we can't
+   tell (no labels until camera permission has been granted once). */
+async function pickRealCamera() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams = devices.filter(d => d.kind === "videoinput");
+    const real = cams.find(c => c.label && !isVirtualCam(c.label));
+    return real ? real.deviceId : "";
+  } catch (err) {
+    return "";
+  }
+}
+
 /* Populate the Settings camera dropdown. Labels are only visible after camera
    permission has been granted once (a browser privacy rule). */
 async function loadCameraDevices(selected) {
@@ -216,9 +245,10 @@ async function loadCameraDevices(selected) {
   try {
     const devices = await navigator.mediaDevices.enumerateDevices();
     const cams = devices.filter(d => d.kind === "videoinput");
-    const opts = [`<option value="">Default camera</option>`];
+    const opts = [`<option value="">Automatic (prefers a real webcam)</option>`];
     cams.forEach((c, i) => {
-      const label = c.label || `Camera ${i + 1}`;
+      let label = c.label || `Camera ${i + 1}`;
+      if (isVirtualCam(label)) label += " — virtual, may be blank";
       const on = c.deviceId === selected ? "selected" : "";
       opts.push(`<option value="${esc(c.deviceId)}" ${on}>${esc(label)}</option>`);
     });

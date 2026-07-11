@@ -408,6 +408,21 @@ class LiveEngine:
                     "briefly and suggest they try again.")
             return
         try:
+            from app.vision.camera import flatness, looks_flat
+            if looks_flat(frame.image):
+                # A featureless grey card: a virtual camera that isn't
+                # connected, a covered lens, or another app holding the webcam.
+                # Never pass that off as a photo of the user.
+                devlog.warn(f"Vision: camera frame is featureless "
+                            f"(luminance std {flatness(frame.image):.1f}) — "
+                            "wrong camera, or another app is using it.")
+                if self.session is not None and self.active:
+                    self.session.send_text(
+                        "(The camera only gave a blank grey image.) Tell the "
+                        "user their webcam isn't giving a real picture — another "
+                        "app may be using it, the lens may be covered, or the "
+                        "wrong camera is selected in Settings → Vision → Camera.")
+                return
             import io
             buf = io.BytesIO()
             frame.image.convert("RGB").save(buf, "JPEG", quality=80)
@@ -429,8 +444,24 @@ class LiveEngine:
         rule router already did this turn — by family, so the model's habitual
         extra take_screenshot after a look_at_screen is skipped too."""
         recent = self._recent_local
-        if recent and time.monotonic() - recent[1] < RULE_DEDUP_WINDOW_S \
-                and _tool_family(recent[0]) == _tool_family(name):
+        if not recent or time.monotonic() - recent[1] >= RULE_DEDUP_WINDOW_S:
+            return None
+
+        # "Open the camera and tell me what you see" makes the model ALSO fire
+        # open_app("camera") — which launches the Windows Camera app, and that
+        # app SEIZES the webcam, so Anna's own capture comes back a flat grey
+        # placeholder. Anna already has the camera directly; refuse the launch.
+        if recent[0] == "camera_look" and name == "open_app":
+            app = str((args or {}).get("app_name") or (args or {}).get("name")
+                      or (args or {}).get("app") or "").lower()
+            if any(word in app for word in ("camera", "webcam")):
+                devlog.log("[gemini_live] refused open_app(camera) — Anna is "
+                           "already using the webcam directly.")
+                return ("Anna looks through the webcam HERSELF — do not open the "
+                        "Camera app, it would take the camera away from her and "
+                        "she'd only see a blank image. She already has the photo.")
+
+        if _tool_family(recent[0]) == _tool_family(name):
             if _tool_family(name) == "screen_snapshot":
                 return ("Anna just captured the screen a moment ago — use that, "
                         "don't grab it again. Just tell the user what's there.")

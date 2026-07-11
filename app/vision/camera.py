@@ -43,6 +43,26 @@ def is_blank(image) -> bool:
     return low == high
 
 
+# A real scene — even a dim one — has plenty of luminance variation. A virtual
+# camera that isn't connected (Camo/OBS/DroidCam) or a webcam another app has
+# seized hands back a near-featureless grey card instead.
+FLAT_STD = 5.0
+
+
+def flatness(image) -> float:
+    """Luminance standard deviation. Near zero = a featureless frame."""
+    try:
+        import numpy as np
+        return float(np.asarray(image.convert("L"), dtype="float32").std())
+    except Exception:
+        return 255.0        # can't tell -> assume it's fine
+
+
+def looks_flat(image) -> bool:
+    """A grey/blank placeholder rather than a real view of the world."""
+    return flatness(image) < FLAT_STD
+
+
 class BrowserCameraStream:
     """getUserMedia in the WebView: the JS side opens the camera, draws one
     frame, and stops every track before returning the data URL. `stop()` is
