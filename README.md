@@ -236,8 +236,8 @@ python app\main.py --doctor   # health check
 
   **Frames stay on this PC by default.** Text is extracted by local OCR
   (install Tesseract: `winget install UB-Mannheim.TesseractOCR` then
-  `pip install pytesseract` — without it Anna says so honestly rather than
-  pretending she read your screen). Sending a frame to Gemini for a richer
+  `python -m pip install pytesseract` — without it Anna says so honestly rather
+  than pretending she read your screen). Sending a frame to Gemini for a richer
   description needs its **own** consent toggle in Settings → Vision, separate
   from every other cloud setting and **off by default**. Frames are never
   saved to disk unless you turn that on, and never appear in the logs.
@@ -246,6 +246,40 @@ python app\main.py --doctor   # health check
   the cloud. If Anna spots a password field, an API key, or words like "account
   number" or "CVV", she stops and asks. Overriding that ("look at my screen
   anyway") is a **high-risk action**, so it needs the strong approval phrase.
+
+  That check is fed by local OCR, so **if the scan can't run, Anna won't send
+  the screen either** — a scan that never ran is not a scan that found nothing.
+  (Without Tesseract installed at all, cloud vision still works, but the log
+  says plainly that no pre-scan happened.)
+
+  On a **multi-monitor** setup, "what's on my screen" captures the monitor you're
+  actually working on, not both squashed together. Say "screen two" to pick one.
+
+#### Setting up the camera
+
+Anna opens the webcam only when you ask, for **one frame**, then closes it — with
+a red badge and a live self-view so you can see exactly what she captured.
+
+Go to **Settings → Vision → Camera**, pick your webcam, and hit **📷 Test this
+camera**. The preview stays up while the camera wakes (some take several seconds)
+and tells you honestly whether it works, is blank, or can't be opened. Once it
+says ✅, **Save** to pin it.
+
+> **Virtual cameras show grey.** If you have **Camo, OBS, DroidCam** or similar
+> installed, one of them is often the Windows *default* — and it hands back a grey
+> placeholder unless its phone/source is connected. Anna flags these in the
+> dropdown, skips them on "Automatic", and refuses to describe a blank frame. If
+> the camera stays grey even for a real webcam, another app is holding it — quit
+> Camo/Teams/the Camera app and retry.
+
+Anna also **never opens the Windows Camera app** to "look" — that app seizes the
+webcam and would leave her with a blank image. She uses the camera directly. (If
+you genuinely want the app, say "open the camera **app**".)
+
+**In a Gemini Live conversation the camera frame goes straight into the session**,
+so Anna sees the photo herself and describes it in her own voice — no separate,
+slower vision call. It is still **one frame** per look, never a video stream. She
+describes people, objects and setting, but will not try to identify anyone.
 
 - **Controlling other apps — Anna clicks real controls, not pixels.** Two
   backends, each for what it's good at:
@@ -328,6 +362,10 @@ python app\main.py --doctor   # health check
 | Cyan border / "Screen Vision Active" badge | Watching mode is on (one frame every ~1.5 s, each discarded). Say "stop looking" or "privacy mode". It also stops itself when idle |
 | Red "Camera on" badge stays up | It shouldn't — the camera is stopped in a `finally` block after a single frame. If it sticks, say "privacy mode" and file an issue with the Developer Tools log |
 | "the camera didn't respond" | The app window needs camera permission in Windows (Settings → Privacy → Camera → allow desktop apps) |
+| Camera shows a **grey/blank picture** | A virtual camera (Camo, OBS, DroidCam) is being used and its phone/source isn't connected — these are often the Windows *default*. Settings → Vision → Camera → pick a real webcam → **Test** → Save. If a real webcam is also grey, another app is holding it: quit Camo / Teams / the Camera app |
+| Settings shows "Camera 1" instead of real names | Browsers hide camera names until permission has been granted once. Open Settings again (Anna unlocks the names on the way in), or run one camera Test first |
+| The **Windows Camera app** opens when I ask Anna to look | It shouldn't — that app seizes the webcam and leaves Anna blank, so she refuses to launch it. If it still opens, file an issue with the log. To open it deliberately, say "open the camera **app**" |
+| Anna won't send a screen: "couldn't read it well enough to check it" | The local sensitive-content scan (OCR) failed, so she won't ship an unchecked screen to the cloud. Retry, or say "look at my screen anyway" and approve with the strong phrase |
 | Anna refuses to look at a screen | She spotted something that looks like a password, API key or banking detail and won't analyze it. Say "look at my screen anyway" and approve with the strong phrase |
 | Cloud vision says a model is unavailable | Preview models churn. Anna retries a fallback model automatically and, failing that, degrades to local OCR. Set a different `vision_cloud_model` in Settings → Vision |
 | "I can't reach your browser on localhost:9222" | Playwright attaches to your real browser over CDP. Start it once with a debug port: close Chrome, then `chrome.exe --remote-debugging-port=9222`. Native-app control (UIA) needs nothing extra |
