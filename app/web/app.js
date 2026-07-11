@@ -232,9 +232,11 @@ async function captureCameraFrame(requestId, device, preview) {
       const cams = await cameraCandidates();   // real webcams before virtual
       ids = cams.length ? cams.map(c => c.deviceId) : [""];
     }
-    const overall = Date.now() + 18000;
+    // Cameras genuinely need seconds to ramp exposure. Give a single (pinned)
+    // camera a long look; when scanning several, budget less per camera.
+    const overall = Date.now() + 22000;
     for (const id of ids) {
-      const budget = ids.length > 1 ? 4500 : 8000;
+      const budget = ids.length > 1 ? 5000 : 11000;
       const got = await grabFromCamera(id, shown, budget);
       if (got.detail > bestDetail) {
         bestDetail = got.detail;
@@ -299,23 +301,90 @@ async function cameraCandidates() {
   return [...real, ...virtual];
 }
 
-/* Populate the Settings camera dropdown. Labels are only visible after camera
-   permission has been granted once (a browser privacy rule). */
+/* Populate the Settings camera dropdown with REAL names.
+
+   Goes through cameraCandidates(), which unlocks the device labels first —
+   enumerating without that gives nameless "Camera 1" entries, because browsers
+   hide camera names until permission has been granted at least once. */
 async function loadCameraDevices(selected) {
   const sel = $("#set-camera_device");
   if (!sel || !navigator.mediaDevices?.enumerateDevices) return;
+  sel.innerHTML = `<option value="">Finding your cameras…</option>`;
+  const cams = await cameraCandidates();
+  const opts = [`<option value="">Automatic (tries your real webcams first)</option>`];
+  cams.forEach((c, i) => {
+    let label = c.label || `Camera ${i + 1}`;
+    if (isVirtualCam(label)) label += " — virtual, often blank";
+    const on = c.deviceId === selected ? "selected" : "";
+    opts.push(`<option value="${esc(c.deviceId)}" ${on}>${esc(label)}</option>`);
+  });
+  if (!cams.length) {
+    opts.push(`<option value="" disabled>No camera found — is one connected?</option>`);
+  }
+  sel.innerHTML = opts.join("");
+}
+
+/* Test a camera and KEEP A LIVE PREVIEW UP while it wakes.
+
+   Cameras can take several seconds to ramp exposure, so the old test (grab a
+   frame, close) shut the preview before you ever saw yourself. This keeps the
+   feed on screen, reports live what the camera is actually giving, and only
+   gives up after a real wait. */
+let cancelCameraTest = null;
+
+async function testCamera(deviceId, statusEl) {
+  const box = $("#camera-preview");
+  const video = $("#camera-preview-video");
+  if (cancelCameraTest) cancelCameraTest();      // supersede a running test
+  let cancelled = false;
+  cancelCameraTest = () => { cancelled = true; };
+  const say = (t) => { if (statusEl) statusEl.textContent = t; };
+
+  say("Opening the camera…");
   try {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const cams = devices.filter(d => d.kind === "videoinput");
-    const opts = [`<option value="">Automatic (prefers a real webcam)</option>`];
-    cams.forEach((c, i) => {
-      let label = c.label || `Camera ${i + 1}`;
-      if (isVirtualCam(label)) label += " — virtual, may be blank";
-      const on = c.deviceId === selected ? "selected" : "";
-      opts.push(`<option value="${esc(c.deviceId)}" ${on}>${esc(label)}</option>`);
-    });
-    sel.innerHTML = opts.join("");
-  } catch (err) { /* enumerate can fail before permission — leave default */ }
+    cameraStream = await navigator.mediaDevices.getUserMedia(
+      deviceId ? { video: { deviceId: { exact: deviceId } } } : { video: true });
+  } catch (err) {
+    say("⚠ Couldn't open that camera. Another app may be holding it — close "
+        + "Camo / Teams / the Camera app — or access is blocked for this window.");
+    cancelCameraTest = null;
+    return;
+  }
+  video.srcObject = cameraStream;
+  video.muted = true;
+  video.playsInline = true;
+  if (box) box.classList.remove("hidden");
+  try { await video.play(); } catch (err) { /* autoplay quirk; frames still come */ }
+
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  const deadline = Date.now() + 20000;          // real time for a slow camera
+  let bestDetail = -1, goodSince = 0;
+  while (!cancelled && Date.now() < deadline) {
+    await sleep(400);
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 480;
+    try { ctx.drawImage(video, 0, 0, canvas.width, canvas.height); } catch (e) { continue; }
+    const detail = canvasDetail(canvas);
+    if (detail > bestDetail) bestDetail = detail;
+    if (detail >= MIN_DETAIL) {
+      if (!goodSince) goodSince = Date.now();
+      say("✅ This camera works — that's you in the corner. Click Save to keep it.");
+      if (Date.now() - goodSince > 5000) break;   // you've had a good look
+    } else {
+      const left = Math.ceil((deadline - Date.now()) / 1000);
+      say(`Warming up — still blank (${left}s left). Some cameras take a while. `
+          + "Click the preview to stop.");
+    }
+  }
+  if (!cancelled && bestDetail < MIN_DETAIL) {
+    say("⚠ This camera only ever gave a blank/grey picture. Pick a different "
+        + "one — a virtual camera (Camo, OBS) shows grey unless its phone or "
+        + "source is connected.");
+  }
+  stopCameraTracks();
+  if (box) box.classList.add("hidden");
+  cancelCameraTest = null;
 }
 
 let lastConfirm = null;   // payload of the card currently on screen (11A)
@@ -691,11 +760,13 @@ function settingsHtml(s) {
     <div class="form-row"><label>Camera</label>
       <select id="set-camera_device"><option value="">Automatic</option></select></div>
     <button class="ghost-btn" id="test-camera">📷 Test this camera</button>
-    <p class="settings-hint">Pick a camera and test it — you'll see yourself in
-      the corner. If it's grey or blank, that camera isn't giving a real picture
-      (a virtual camera like Camo shows grey unless its phone is connected);
-      choose a different one. On "Automatic", Anna tries your real webcams first
-      and skips any camera that only returns a blank image.</p>
+    <p class="settings-hint">Pick a camera and test it — the live preview stays
+      on screen while the camera wakes up (some take several seconds), and the
+      line below tells you whether it's actually working. Click the preview to
+      stop it early. A virtual camera (Camo, OBS) shows grey unless its phone or
+      source is connected — pick a real webcam instead. On "Automatic", Anna
+      tries your real webcams first and skips any that only returns a blank
+      image.</p>
     <div class="form-row" style="flex-direction:row;align-items:center;gap:10px">
       <input type="checkbox" id="set-camera_preview"
              ${s.camera_preview !== false ? "checked" : ""} style="width:auto">
@@ -1091,26 +1162,9 @@ const handlers = {
   settings: (p) => {
     openModal("Settings", settingsHtml(p));
     loadCameraDevices(p.camera_device || "");   // 11B: list webcams
-    // Test the selected camera and SHOW the result — no guessing which one works.
-    $("#test-camera").addEventListener("click", async () => {
-      const id = $("#set-camera_device")?.value || "";
-      const status = $("#settings-status");
-      const box = $("#camera-preview");
-      if (status) status.textContent = "Opening the camera…";
-      const got = await grabFromCamera(id, true, 7000);
-      if (box) { await sleep(2500); box.classList.add("hidden"); }
-      if (!status) return;
-      if (got.detail >= MIN_DETAIL) {
-        status.textContent = "✅ That camera works — you should have seen "
-          + "yourself in the corner. Save to keep it.";
-      } else if (got.detail < 0) {
-        status.textContent = "⚠ Couldn't open that camera. It may be in use by "
-          + "another app (close Camo / Teams / the Camera app) or blocked.";
-      } else {
-        status.textContent = "⚠ That camera only gives a blank/grey picture. "
-          + "Pick a different one — a virtual camera (Camo, OBS) shows grey "
-          + "unless its phone/source is connected.";
-      }
+    // Test the selected camera with a LIVE preview that stays up while it wakes.
+    $("#test-camera").addEventListener("click", () => {
+      testCamera($("#set-camera_device")?.value || "", $("#settings-status"));
     });
     $("#settings-save").addEventListener("click", () => {
       call("save_settings", collectSettings());
@@ -1293,6 +1347,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const detailsBtn = e.target.closest("[data-details]");
     if (detailsBtn) {                       // 11A: same expansion as voice
       if (lastConfirm) expandConfirmDetails(lastConfirm);
+      return;
+    }
+    if (e.target.closest("#camera-preview")) {   // click the self-view to stop
+      if (cancelCameraTest) cancelCameraTest();
       return;
     }
     const viewBtn = e.target.closest("[data-open-path]");

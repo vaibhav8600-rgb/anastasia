@@ -19,8 +19,9 @@ from app.agent.devlog import devlog
 from app.vision import CameraUnavailable, VisionFrame
 
 # Generous: the browser may first open a camera briefly just to unlock device
-# labels, then open the real one and wait out the exposure ramp.
-CAMERA_TIMEOUT_S = 25.0
+# labels, then try each camera in turn, waiting out the exposure ramp on each
+# (real webcams need seconds before they stop returning a grey frame).
+CAMERA_TIMEOUT_S = 35.0
 INSTALL_HINT = ("I couldn't reach a camera. The app window needs camera "
                 "permission, or install OpenCV (pip install opencv-python).")
 
