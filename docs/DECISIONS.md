@@ -149,3 +149,30 @@ one.
 
 **Revisit when:** never widen the trigger. If a future phase wants ambient
 listening, that is a new consent card, not an extension of this.
+
+---
+
+## D-0.6 — The camera stays in the window
+
+The camera is opened by the **WebView's `getUserMedia`** (`BrowserCameraStream`),
+not by core. A headless daemon has no browser and therefore **cannot open the
+camera at all**.
+
+| Option | Verdict |
+|---|---|
+| **(a) Camera requires the window** | **CHOSEN** |
+| (b) Move it to core via OpenCV | Rejected — a ~60MB dependency, and we would lose the browser self-preview *and* the OS camera indicator, then have to rebuild the virtual-camera / grey-frame handling that Phase 11 just got working. |
+| (c) Hybrid (browser when attached, OpenCV when not) | Rejected — two code paths and two sets of bugs, for a case (a headless selfie) nobody asked for. |
+
+**Chosen behaviour:** with the window open, the camera works exactly as it does
+today — self-preview, red badge, one frame, Mira consent pattern intact.
+Windowless, Anna **offers to open the window** ("I need my window for the camera
+— shall I open it?") and does so on approval. If the user declines she says so
+plainly. **She never pretends to have looked.**
+
+The offer is cheap because core can already raise the UI (the tray owns
+Open Anna); it is a prompt, not a new capability.
+
+**Revisit when:** a future phase genuinely needs headless vision (e.g. a security
+watcher). That is a new consent card and a new dependency decision, not a quiet
+extension of this one.

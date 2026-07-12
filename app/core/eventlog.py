@@ -28,6 +28,7 @@ NEVER logged, by construction: raw audio, screen text / OCR output, frames or
 image data, clipboard contents, file contents, API keys, passwords.
 """
 
+import hashlib
 import json
 import queue
 import re
@@ -64,6 +65,12 @@ CREATE INDEX IF NOT EXISTS idx_events_type ON events(type);
 """
 
 
+# First-class COLUMNS on every row. They are `emit()` keyword arguments, so an
+# event type must never also declare them as payload fields — it would be
+# structurally unfillable (emit would swallow the value into the column).
+# `test_no_event_field_shadows_a_column` enforces this.
+RESERVED_COLUMNS = ("ts", "type", "source", "salience", "outcome")
+
 # ---- layer 1: the allowlist ------------------------------------------------
 # THE security boundary. A field that is not named here cannot be logged, no
 # matter what a caller passes. Adding a field here is a privacy decision —
@@ -74,12 +81,15 @@ EVENT_FIELDS = {
     "tool_call":         ("tool", "args", "success", "duration_ms", "backend"),
     "validator_verdict": ("tool", "allowed", "risk", "requires_confirmation",
                           "destructive_target", "confidence", "reason"),
-    "confirmation":      ("tool", "outcome", "strong_required", "channel",
-                          "reason"),
+    # NB: approved/cancelled/expired rides in the `outcome` COLUMN, not here.
+    "confirmation":      ("tool", "strong_required", "channel", "reason"),
     "engine_state":      ("component", "state", "reason"),
     "circuit_state":     ("component", "state", "failures"),
     "capture":           ("kind", "scope", "used_cloud", "chars"),  # NEVER content
     "error":             ("component", "message"),
+    # Written by the log about ITSELF when it had to drop events. An audit
+    # trail that loses rows silently is worse than useless — it lies.
+    "log_gap":           ("dropped", "reason"),
 }
 
 # ---- layer 2: the key denylist (defence in depth) ---------------------------
@@ -107,14 +117,26 @@ CONTENT_TOOLS = {
 _DATA_URL = re.compile(r"data:[^;,\s]+;base64,", re.IGNORECASE)
 
 
+def _descriptor(value, kind: str = "data") -> dict:
+    """Presence without content.
+
+    A blob (a screenshot crop, raw audio) must never be logged — but *dropping
+    it silently* leaves the audit trail quietly incomplete, which is the failure
+    mode this log exists to prevent. So we record that something was there, how
+    big it was, and a fingerprint of it: enough to prove an image existed and to
+    correlate it with anything else that saw it, and not one pixel more.
+    """
+    raw = value if isinstance(value, bytes) else str(value).encode("utf-8", "ignore")
+    return {"dropped": kind, "bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest()[:16]}
+
+
 def _scrub(text: str) -> str:
     """Layer 3: strip secret-SHAPED things from a value we do intend to keep.
     Reuses the Phase-11 patterns rather than inventing a second, divergent list."""
     from app.vision.sensitive import SENSITIVE_PATTERNS
 
     out = str(text)
-    if _DATA_URL.search(out):
-        return "[redacted: embedded image data]"
     for pattern, _label in SENSITIVE_PATTERNS:
         out = re.sub(pattern, "[redacted]", out)
     if len(out) > VALUE_MAX_CHARS:      # layer 4: nothing bulk can get through
@@ -125,22 +147,34 @@ def _scrub(text: str) -> str:
 def _clean_value(value):
     if isinstance(value, bool) or isinstance(value, (int, float)) or value is None:
         return value
+    if isinstance(value, bytes):
+        return _descriptor(value, "binary")          # raw audio can never sneak in
     if isinstance(value, dict):
         return _clean_args(value)
     if isinstance(value, (list, tuple)):
         return [_clean_value(v) for v in list(value)[:10]]
-    return _scrub(value)
+    text = str(value)
+    if _DATA_URL.search(text):
+        # Catch the blob BEFORE the length cap — truncating base64 to 300 chars
+        # still leaves 300 chars of image.
+        return _descriptor(text, "image")
+    return _scrub(text)
 
 
 def _clean_args(args: dict) -> dict:
-    """Sanitize a tool-argument dict: drop internal and denylisted keys, scrub
-    what remains. `_resolved` (11C) is the reason for the underscore rule — it
-    carries a base64 screenshot crop of the click target."""
+    """Sanitize an argument dict.
+
+    Internal (`_`-prefixed) keys are cleaned, NOT dropped. `_resolved` (11C) is
+    the interesting case: it carries the resolved click target — name, control
+    type, backend, confidence (all valuable audit) *and* `crop_data_url`, a
+    base64 screenshot of the target (never loggable). Cleaning recursively keeps
+    the former and turns the latter into a descriptor, so the audit says
+    "clicked the button named Send, resolved via playwright, and there was a
+    12KB image of it" without holding the image.
+    """
     clean = {}
     for key, value in (args or {}).items():
         name = str(key)
-        if name.startswith("_"):                       # internal (e.g. _resolved)
-            continue
         if name.lower() in DENY_KEYS:
             clean[name] = "[redacted]"
             continue
@@ -163,13 +197,20 @@ def sanitize(event_type: str, payload: dict) -> dict:
             continue
         value = payload[name]
         if name == "args":
-            args = _clean_args(value if isinstance(value, dict) else {})
+            raw = value if isinstance(value, dict) else {}
             if tool in REDACT_VALUE_TOOLS:
-                # keep the shape (which keys), never the words
-                args = {k: (f"[redacted {len(str(v))} chars]"
-                            if isinstance(v, str) else _clean_value(v))
-                        for k, v in args.items()}
-            out[name] = args
+                # Keep the shape (which keys), never the words. Done on the RAW
+                # values, NOT on already-cleaned ones — redacting a redaction
+                # would report the length of "[redacted]" instead of the secret's,
+                # and a log that states a wrong length is lying.
+                out[name] = {
+                    str(k): ("[redacted]" if str(k).lower() in DENY_KEYS
+                             else f"[redacted {len(v)} chars]" if isinstance(v, str)
+                             else _clean_value(v))
+                    for k, v in raw.items()
+                }
+            else:
+                out[name] = _clean_args(raw)
         else:
             out[name] = _clean_value(value)
     return out
@@ -188,6 +229,8 @@ class EventLog:
         self._thread = None
         self._failures = 0
         self._open_until = 0.0
+        self._drop_lock = threading.Lock()
+        self._gap = 0               # dropped since the last log_gap marker
         self.dropped = 0            # queue-full drops (never blocks a turn)
         self.written = 0
         self.spilled = 0            # rows written to the JSONL fallback
@@ -236,19 +279,33 @@ class EventLog:
             devlog.log("eventlog: circuit CLOSED — writing to SQLite again.")
 
     # --------------------------------------------------------------- writing
+    def _row(self, event_type: str, source: str, salience: float, outcome: str,
+             payload: dict) -> dict:
+        return {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "type": str(event_type),
+            "source": str(source)[:40],
+            "payload": sanitize(str(event_type), payload),
+            "salience": float(salience),
+            "outcome": str(outcome)[:60],
+        }
+
     def emit(self, event_type: str, *, source: str = "", salience: float = 0.0,
              outcome: str = "", **payload) -> bool:
         """Record an event. NON-BLOCKING and never raises: a logging problem
-        must never cost the user a word. Returns False if the row was dropped."""
+        must never cost the user a word.
+
+        Queue policy — bounded, drop-OLDEST, and the loss is recorded:
+          * bounded (`queue_max`), so a stalled writer can never eat RAM;
+          * when full we discard the OLDEST queued row, not this one — under
+            pressure the *recent* history is what a human is about to read, and
+            the stale rows are the ones worth losing;
+          * every drop is counted, and once the writer catches up it writes a
+            `log_gap` row saying how many were lost. A log with a hole in it is
+            worse than a log that admits the hole.
+        """
         try:
-            row = {
-                "ts": datetime.now().isoformat(timespec="seconds"),
-                "type": str(event_type),
-                "source": str(source)[:40],
-                "payload": sanitize(str(event_type), payload),
-                "salience": float(salience),
-                "outcome": str(outcome)[:60],
-            }
+            row = self._row(event_type, source, salience, outcome, payload)
         except Exception as e:                    # sanitizing must not kill a turn
             devlog.warn(f"eventlog: could not sanitize {event_type!r} ({e})")
             return False
@@ -256,11 +313,44 @@ class EventLog:
             self._q.put_nowait(row)
             return True
         except queue.Full:
-            self.dropped += 1
-            if self.dropped in (1, 100, 1000):    # don't spam
-                devlog.warn(f"eventlog: queue full — {self.dropped} events "
-                            "dropped. Voice is unaffected.")
-            return False
+            pass
+        with self._drop_lock:                     # make room by dropping the oldest
+            try:
+                self._q.get_nowait()
+                self.dropped += 1
+                self._gap += 1
+            except queue.Empty:
+                pass
+            try:
+                self._q.put_nowait(row)
+                keep = True
+            except queue.Full:                    # writer wedged: lose this one too
+                self.dropped += 1
+                self._gap += 1
+                keep = False
+            gap = self._gap
+        if gap in (1, 100, 1000):                 # don't spam the devlog
+            devlog.warn(f"eventlog: queue full — {gap} events dropped so far "
+                        "(oldest first). Voice is unaffected; a log_gap row "
+                        "will record the loss.")
+        return keep
+
+    def _write_gap_marker(self, conn) -> None:
+        """Once the backlog is clear, admit in the log itself what was lost."""
+        with self._drop_lock:
+            gap = self._gap
+            if not gap or not self._q.empty():
+                return                            # still catching up; wait
+            self._gap = 0
+        try:
+            self._write(conn, self._row("log_gap", "eventlog", 1.0, "dropped",
+                                        {"dropped": gap, "reason": "queue full"}))
+            self.written += 1
+            devlog.warn(f"eventlog: recorded a log_gap — {gap} events were "
+                        "dropped while the writer was behind.")
+        except Exception:
+            with self._drop_lock:                 # couldn't say it; still owe it
+                self._gap += gap
 
     def _run(self) -> None:
         conn = None
@@ -289,6 +379,7 @@ class EventLog:
                     self._write(conn, row)
                     self.written += 1
                     self._record_success()
+                    self._write_gap_marker(conn)   # caught up? admit any loss
                     continue
                 except Exception as e:
                     self._record_failure(e)

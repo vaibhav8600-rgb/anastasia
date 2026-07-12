@@ -123,17 +123,41 @@ def test_denylisted_keys_are_redacted_inside_args(log):
     assert "password" in DENY_KEYS
 
 
-def test_internal_underscore_args_are_dropped(log):
-    """11C stamps `_resolved` on the plan — it carries a base64 SCREENSHOT of
-    the click target. That must never reach a log."""
+def test_resolved_target_is_audited_without_its_pixels(log):
+    """11C stamps `_resolved` on the plan. It carries BOTH the audit gold (which
+    control, which backend, how confident) AND a base64 screenshot of the target.
+    Keep the former; reduce the latter to presence-without-content — dropping it
+    silently would leave the audit quietly incomplete."""
     log.emit("tool_call", tool="click_control",
              args={"hint": "Send",
-                   "_resolved": {"name": "Send",
+                   "_resolved": {"name": "Send", "control_type": "button",
+                                 "backend": "playwright", "confidence": 1.0,
                                  "crop_data_url": FAKE_B64_IMAGE}})
+    log.flush()
+    resolved = log.recent()[0]["payload"]["args"]["_resolved"]
+
+    # the audit survives, in full
+    assert resolved["name"] == "Send"
+    assert resolved["backend"] == "playwright"
+    assert resolved["confidence"] == 1.0
+
+    # ...and the image is described, not stored
+    crop = resolved["crop_data_url"]
+    assert crop["dropped"] == "image"
+    assert crop["bytes"] == len(FAKE_B64_IMAGE)
+    assert len(crop["sha256"]) == 16
+
     body = db_text(log)
-    assert "_resolved" not in body and "crop_data_url" not in body
     assert "base64" not in body and "AAAA" not in body
-    assert "Send" in body
+
+
+def test_raw_bytes_become_a_descriptor(log):
+    """Raw audio is bytes. It can never be logged — but its presence can be."""
+    log.emit("tool_call", tool="run_terminal", args={"blob": b"\x00\xff" * 4000})
+    log.flush()
+    blob = log.recent()[0]["payload"]["args"]["blob"]
+    assert blob["dropped"] == "binary" and blob["bytes"] == 8000
+    assert "\\x00" not in db_text(log)
 
 
 # ---- layer 3: value scrubbing (reuses the Phase-11 secret patterns) ---------
@@ -194,6 +218,82 @@ def test_typed_text_keeps_shape_not_words(log):
     assert "type_text" in body and "redacted" in body   # we know it happened
 
 
+# ---- OVER-redaction: a log that redacts everything is also useless -----------
+# These matter as much as the secret tests. The four layers must let a rich,
+# legitimate event through INTACT and still useful to a human reading the audit.
+
+def test_ordinary_events_survive_all_four_layers_intact(log):
+    log.emit("user_turn", source="voice", text="open chrome and search for flights",
+             route="rule", engine="pipeline", confidence=0.94)
+    log.emit("tool_call", source="voice", tool="browser_open",
+             args={"url": "https://www.google.com/search?q=flights+to+goa"},
+             success=True, duration_ms=142)
+    log.emit("validator_verdict", tool="run_terminal", allowed=True, risk="medium",
+             requires_confirmation=True,
+             reason="Terminal commands always require confirmation.")
+    log.emit("confirmation", tool="run_terminal", outcome="approved",
+             strong_required=True, channel="voice", salience=0.8)
+    log.flush()
+
+    rows = {r["type"]: r for r in log.recent()}
+
+    turn = rows["user_turn"]["payload"]
+    assert turn["text"] == "open chrome and search for flights"   # verbatim
+    assert turn["route"] == "rule" and turn["confidence"] == 0.94  # types kept
+
+    call = rows["tool_call"]["payload"]
+    assert call["args"]["url"] == "https://www.google.com/search?q=flights+to+goa"
+    assert call["success"] is True and call["duration_ms"] == 142
+
+    verdict = rows["validator_verdict"]["payload"]
+    assert verdict["reason"] == "Terminal commands always require confirmation."
+    assert verdict["allowed"] is True and verdict["risk"] == "medium"
+
+    # the verdict rides in the `outcome` COLUMN (first-class), not the payload
+    assert rows["confirmation"]["outcome"] == "approved"
+    assert rows["confirmation"]["salience"] == 0.8
+    assert rows["confirmation"]["payload"]["strong_required"] is True
+    assert rows["confirmation"]["payload"]["channel"] == "voice"
+
+
+def test_no_event_field_shadows_a_column():
+    """`source`, `salience` and `outcome` are emit() kwargs that become COLUMNS.
+    An event type that also declared one as a payload field would be
+    structurally unfillable — emit() would swallow it into the column and the
+    payload key would never appear. (This is not hypothetical: `confirmation`
+    shipped with exactly that bug and the over-redaction test caught it.)"""
+    from app.core.eventlog import RESERVED_COLUMNS
+    for event_type, fields in EVENT_FIELDS.items():
+        clash = set(fields) & set(RESERVED_COLUMNS)
+        assert not clash, f"{event_type} payload shadows column(s) {clash}"
+
+
+def test_talking_about_a_password_is_not_a_password(log):
+    """The sharp distinction: the user's WORDS are the audit (keep them); a
+    credential in an argument VALUE is a secret (kill it)."""
+    log.emit("user_turn", text="how do I reset my password on GitHub", route="chat")
+    log.emit("tool_call", tool="browser_type_into",
+             args={"field": "password", "password": "hunter2"})
+    log.flush()
+    rows = log.recent()
+
+    turn = next(r for r in rows if r["type"] == "user_turn")
+    assert turn["payload"]["text"] == "how do I reset my password on GitHub"
+
+    call = next(r for r in rows if r["type"] == "tool_call")
+    assert call["payload"]["args"]["password"] == "[redacted]"
+    assert "hunter2" not in db_text(log)
+
+
+def test_a_full_length_legitimate_value_is_not_truncated(log):
+    """Right up to the cap, real content must arrive whole."""
+    from app.core.eventlog import VALUE_MAX_CHARS
+    sentence = "a" * (VALUE_MAX_CHARS - 1)
+    log.emit("error", component="brain", message=sentence)
+    log.flush()
+    assert log.recent()[0]["payload"]["message"] == sentence   # untouched
+
+
 # ---- it can never cost the user a word ---------------------------------------
 
 def test_emit_never_blocks_and_never_raises(tmp_path):
@@ -205,6 +305,42 @@ def test_emit_never_blocks_and_never_raises(tmp_path):
     assert elapsed < 0.5, "emit() blocked a turn"
     assert el.dropped > 0                      # dropped, honestly counted
     el.close()
+
+
+def test_queue_is_bounded_and_drops_the_OLDEST(tmp_path):
+    """Bounded RAM, and under pressure we keep what a human is about to read."""
+    el = EventLog(tmp_path / "e.sqlite", queue_max=5, start=False)
+    for i in range(50):
+        el.emit("user_turn", text=f"turn {i}")
+
+    assert el._q.qsize() <= 5                  # bounded — no unbounded RAM
+    kept = []
+    while not el._q.empty():
+        kept.append(el._q.get_nowait()["payload"]["text"])
+    assert kept[-1] == "turn 49"               # the NEWEST survived
+    assert "turn 0" not in kept                # the oldest was the one dropped
+    assert el.dropped == 45
+    el.close()
+
+
+def test_a_dropped_event_is_admitted_in_the_log(tmp_path):
+    """No silent loss: once the writer catches up it records the hole."""
+    el = EventLog(tmp_path / "e.sqlite", queue_max=5, start=False)
+    for i in range(50):                        # overflow while the writer is down
+        el.emit("user_turn", text=f"turn {i}")
+    assert el.dropped == 45
+
+    el.start()                                 # writer comes back
+    deadline = time.time() + 5
+    while not el.recent(limit=1, event_type="log_gap") and time.time() < deadline:
+        time.sleep(0.05)
+    el.close()
+
+    gaps = el.recent(event_type="log_gap")
+    assert gaps, "the log lost 45 events and never said so"
+    assert gaps[0]["payload"]["dropped"] == 45
+    assert gaps[0]["payload"]["reason"] == "queue full"
+    assert gaps[0]["salience"] == 1.0          # a human should notice this
 
 
 def test_write_failure_opens_circuit_and_spills_to_file(tmp_path):
@@ -227,6 +363,46 @@ def test_write_failure_opens_circuit_and_spills_to_file(tmp_path):
     lines = el.fallback_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) >= 4
     assert json.loads(lines[0])["payload"]["text"] == "turn 0"
+
+
+# ---- the audit TOOLING must not repeat the WAL trap --------------------------
+
+def test_secret_scanner_reads_the_wal_not_just_the_sqlite(tmp_path, monkeypatch):
+    """The trap, pinned. While a writer is live, rows sit in `events.sqlite-wal`
+    and the main `.sqlite` does NOT contain them. A scanner that reads only the
+    `.sqlite` searches an empty file, finds nothing, and tells a human their
+    secrets are safe having checked NOTHING. Verified against the real files."""
+    import app.core.inspect_events as inspect
+
+    path = tmp_path / "events.sqlite"
+    monkeypatch.setattr(inspect, "DEFAULT_PATH", path)
+
+    el = EventLog(path)                       # writer stays OPEN, as in a session
+    el.emit("user_turn", text="a distinctive marker phrase", route="chat")
+    el.flush()
+
+    names = [f.name for f in inspect.log_files(path)]
+    assert any(n.endswith("-wal") for n in names), "the -wal file was not scanned"
+
+    wal = next(f for f in inspect.log_files(path) if f.name.endswith("-wal"))
+    assert b"a distinctive marker phrase" in wal.read_bytes()      # it's in the WAL
+    assert b"a distinctive marker phrase" not in path.read_bytes()  # NOT in the db
+    el.close()
+
+
+def test_secret_scanner_would_actually_catch_a_leak(tmp_path, monkeypatch):
+    """Prove the scanner is not vacuous: plant a real key on disk, expect a hit."""
+    import app.core.inspect_events as inspect
+
+    path = tmp_path / "events.sqlite"
+    path.write_text("")
+    (tmp_path / "events.fallback.jsonl").write_text(
+        json.dumps({"leak": FAKE_GROQ}), encoding="utf-8")
+    monkeypatch.setattr(inspect, "DEFAULT_PATH", path)
+
+    hits = inspect.scan_secrets(path)
+    assert hits, "the scanner cannot see a key sitting in plain sight"
+    assert any("Groq" in label for _f, label, _s in hits)
 
 
 def test_stats_are_honest(log):

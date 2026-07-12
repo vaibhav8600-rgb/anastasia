@@ -1694,6 +1694,13 @@ def main() -> None:
         from app.doctor import run_doctor
         sys.exit(run_doctor())
 
+    # Phase 0: let a human actually read (and audit) the event log.
+    #   --dump-events [N]   show the last N events
+    #   --scan-secrets      grep EVERY byte the log wrote for secret shapes
+    if "--dump-events" in sys.argv or "--scan-secrets" in sys.argv:
+        from app.core.inspect_events import run_cli
+        sys.exit(run_cli(sys.argv))
+
     import webview
 
     from app.web.bridge import JsApi, UIBridge
