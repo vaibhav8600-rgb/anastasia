@@ -105,3 +105,47 @@ removes the concurrency problem at the root rather than tolerating it. Reads
 
 **Revisit when:** the log exceeds ~1GB or needs full-text search (then FTS5 —
 still stdlib).
+
+---
+
+## D-0.5 — Answering a confirmation when there is no window
+
+**This is a deliberate design decision, not a bug fix.** It is the one place
+Phase 0 changes Anna's *behaviour*, and it changes when she opens the mic — so
+it is recorded here and in the README privacy section, not slipped in.
+
+**The problem.** With the window closed, the only answer channel for a
+confirmation card is voice. But `confirmation_voice_listen` defaults to `False`
+(`config.py`) — Anna deliberately does **not** reopen the mic to hear "approve",
+because a card appearing should never silently start listening. Windowless, that
+leaves a card sitting unanswerable until it expires. M0.2 step 3 requires the
+opposite: *"She asks by voice, and 'Anna approve' works."*
+
+| Option | Verdict |
+|---|---|
+| Leave it off | Rejected — a headless Anna could never be told "yes". Breaks the point of the phase. |
+| Turn it on globally | **Rejected** — with a window open, clicking works fine; auto-opening the mic on every card is a privacy regression for zero benefit. |
+| **On only when no UI client is attached** | **CHOSEN** |
+
+**Chosen behaviour** (implemented in half B):
+
+1. Only when **zero UI clients are connected** to core. Attach a window and it
+   reverts to click-or-push-to-talk.
+2. She **asks the question aloud first** — the mic does not open until she has
+   finished speaking the card (half-duplex already guarantees she can't hear
+   herself).
+3. An **audible cue** marks the mic opening, so an open mic is never silent or
+   ambiguous — the windowless equivalent of the on-screen mic ring.
+4. A **short listen window** (one answer, then closed) — not an open-ended
+   session. Expiry still auto-cancels as always.
+5. The strong-phrase tier is **unchanged**: destructive actions still demand
+   "Anna approve". A windowless Anna gets no easier to persuade.
+
+**Why this is safe:** the mic opens only in direct response to a card *Anna
+herself raised*, only when nobody can click, only after she has said why, only
+with an audible cue, and only for one short window. It cannot be reached without
+a pending confirmation, which cannot exist without the validator having demanded
+one.
+
+**Revisit when:** never widen the trigger. If a future phase wants ambient
+listening, that is a new consent card, not an extension of this.

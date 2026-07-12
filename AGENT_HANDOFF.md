@@ -15,7 +15,11 @@ rule router (instant) or local LLM (Ollama) → safety validator →
 whitelisted tool executor → spoken + rendered reply. No cloud calls.
 Personality: warm, playful, lightly flirty best-friend; short spoken replies.
 
-**Status: all 6 overhaul phases COMPLETE** (2026-07-05), 126 tests passing.
+**Status: Phases 1–11 COMPLETE; Phase 0 (core/UI split) IN PROGRESS.**
+**456 tests passing.** (This file's older sections describe the state at the
+end of the original 6-phase overhaul and are kept as history — where they
+disagree with the code, the code wins. See `PLAN_PHASE_0.md` and
+`docs/DECISIONS.md` for current work.)
 The original 6-phase master spec lives in the first user message of the
 original session; its binding rules are reproduced in §10 below.
 
@@ -25,7 +29,7 @@ original session; its binding rules are reproduced in §10 below.
 .venv\Scripts\python.exe app\main.py             # run the app
 .venv\Scripts\python.exe app\main.py --doctor    # health check
 .venv\Scripts\python.exe app\main.py --debug     # WebView2 devtools console
-.venv\Scripts\python.exe -m pytest tests/ -q     # 126 tests, ~3s
+.venv\Scripts\python.exe -m pytest tests/ -q     # 456 tests, ~50s
 ```
 
 Git: local repo only (no remote). One commit per unit of work,

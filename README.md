@@ -396,7 +396,7 @@ Details: [INSTALLER.md](INSTALLER.md).
 ## Development
 
 ```powershell
-.venv\Scripts\python.exe -m pytest tests/ -q   # 126+ tests
+.venv\Scripts\python.exe -m pytest tests/ -q   # 456 tests
 python app\main.py --debug                      # DevTools console
 ```
 
