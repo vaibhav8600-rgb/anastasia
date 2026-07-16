@@ -23,3 +23,5 @@ app/data/events.sqlite
 app/data/events.sqlite-wal
 app/data/events.sqlite-shm
 app/data/events*.jsonl
+# Per-install IPC secret — must never ship in a repo
+app/data/ipc_token

@@ -85,6 +85,54 @@ fields only) · `get_history` · `open_path` (screenshot dir + safe folders
 only) · `clear_history` · `recheck` · `ready` · `test_voice` ·
 `test_microphone` · `test_model`.
 
+## IPC protocol (core ⇄ UI over localhost WebSocket, Phase 0)
+
+Defined in `app/core/protocol.py`; transport-agnostic and unit-tested without
+a socket. Every frame is one JSON envelope:
+
+```json
+{"v": 1, "id": "<unique>", "ts": "<iso>", "type": "<name>", "payload": {}}
+```
+
+Replies add `"re": "<id being answered>"`. The wire form is canonical JSON
+(sorted keys, no whitespace); **every message type has a golden fixture** in
+`tests/fixtures/protocol/` compared byte-for-byte in CI, so envelope drift
+fails a test, never a connected client. Deliberate changes regenerate them:
+`python -m tests.protocol_goldens`.
+
+| Type | Direction | Payload |
+|---|---|---|
+| `hello` | client → core | `{token, client}` — the ONLY pre-auth frame |
+| `hello_ok` | core → client | `{protocol, server}` — never echoes the token |
+| `protocol_mismatch` | core → client | `{reason, expected_version, got_version}`, then close |
+| `auth_failed` | core → client | `{reason}`, then close |
+| `event` | core → client | `{event, data}` — wraps the `ui.dispatch` vocabulary above |
+| `request` | client → core | `{method, args}` — mirrors the `JsApi` surface |
+| `response` | core → client | `re` + `{ok, result \| error}` — error categories, never tracebacks |
+| `approval` | client → core | `{confirmation_id, decision: approve\|cancel}` |
+| `approval_result` | core → client | `re` + `{outcome, confirmation_id, decision, reason}` |
+| `error` | core → client | `{reason}` — post-auth bad frame; session stays open |
+
+**Version policy:** `v` must equal `PROTOCOL_VERSION` exactly. Missing or
+unknown → explicit `protocol_mismatch` + clean close — never silent
+tolerance. Version outranks auth: a correct token in a wrong-version frame is
+still a mismatch. A mid-session version change also closes.
+
+**Auth (per-install token, `app/core/auth.py`):** localhost is not an
+identity, so the first frame must be a `hello` carrying the token from
+`app/data/ipc_token` (minted on first use, user-ACL'd, git-ignored, redacted
+by the event log's deny-list, compared constant-time). Everything pre-auth is
+rejected with its specific frame and a close; the rejection never says how
+close the caller got.
+
+**Approvals (`app/core/approvals.py`):** a remote approval MUST name the
+confirmation it answers. The router delegates to the same
+`pipeline.approve_pending/cancel_pending` the window buttons use — one
+execution path — which pop the card atomically by id. Outcomes: `applied`,
+`rejected-stale` (a *different* card is pending: expired card A can never
+approve card B), `rejected-unknown` (expired/duplicate), `rejected-invalid`
+(no id). Every no-op is written to the event log.
+
 ## Safety invariants
 
 1. LLM output is parsed into a validated `ActionPlan`; it is data, never code.

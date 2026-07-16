@@ -539,10 +539,13 @@ class CommandPipeline:
         """Serializable view of the pending confirmation (full_state)."""
         return self.confirm.payload()
 
-    def approve_pending(self, action_id=None) -> None:
+    def approve_pending(self, action_id=None) -> bool:
+        """Returns whether the id actually landed on the pending card — a
+        stale/unknown id takes nothing and returns False, so IPC callers
+        (app.core.approvals) can report the no-op honestly."""
         pending = self._take_pending(action_id)
         if not pending:
-            return
+            return False
         plan, safety, transcript = pending.plan, pending.safety, pending.transcript
         self.ui.hide_confirmation()
 
@@ -553,7 +556,7 @@ class CommandPipeline:
             # translates "ready" -> "listening (Live)" while a session is up).
             self._fire_callback(pending, True)
             self.ui.set_state("ready")
-            return
+            return True
 
         if pending.kind == "fuzzy" and safety.requires_confirmation:
             # "Did you mean X?" was only the clarification — the action itself
@@ -561,13 +564,13 @@ class CommandPipeline:
             next_id = self._set_pending(plan, safety, transcript)
             if next_id is None:
                 self.ui.show_info(DEFERRED_MESSAGE)
-                return
+                return True
             self.ui.set_state("waiting_confirmation")
             self.ui.ask_confirmation(next_id, transcript, plan, safety,
                                      kind="safety", message="")
             self.speech.speak_async(self.confirm.summary())
             self.confirm.begin_listening()
-            return
+            return True
 
         def worker():
             with self._busy_lock:
@@ -598,11 +601,13 @@ class CommandPipeline:
                              name="anna-approved").start()
         else:
             worker()
+        return True
 
-    def cancel_pending(self, reason: str = "user", action_id=None) -> None:
+    def cancel_pending(self, reason: str = "user", action_id=None) -> bool:
+        """Returns whether the id landed (see approve_pending)."""
         pending = self._take_pending(action_id)
         if not pending:
-            return
+            return False
         plan, safety, transcript = pending.plan, pending.safety, pending.transcript
         self.ui.hide_confirmation()
         self._safe_log(transcript, plan, safety, executed=False,
@@ -614,7 +619,7 @@ class CommandPipeline:
             self.ui.show_info(CONFIRM_TIMEOUT_MESSAGE if reason == "timeout"
                               else "Cancelled — nothing was executed.")
             self.ui.set_state("ready")
-            return
+            return True
         if reason == "timeout":
             timeout = (self.fuzzy_timeout_seconds if pending.kind == "fuzzy"
                        else self.confirm_timeout_seconds)
@@ -628,6 +633,7 @@ class CommandPipeline:
             self.ui.show_info("Cancelled — nothing was executed.")
             self.speech.speak_async("Okay, cancelled.")
         self.ui.set_state("ready")
+        return True
 
     # --------------------------------------------------------- watchdog
     def _start_watchdog(self) -> None:
