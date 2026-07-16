@@ -14,16 +14,17 @@ function esc(text) {
   return div.innerHTML;
 }
 
-function api() {
-  return (window.pywebview && window.pywebview.api) || null;
-}
+/* Transport (Phase 0, commit 5): all JS↔Python traffic goes through one of
+   these. LegacyTransport = the in-process pywebview path (unchanged). In the
+   split build, anna-ui exposes get_ws_config() and we get a WsTransport that
+   forwards `call()` to anna-core over a localhost WebSocket. `transport` is
+   set at boot; until then calls are buffered as no-ops resolving null, exactly
+   as the old `api()`-missing path did. */
+let transport = null;
 
 function call(method, ...args) {
-  const a = api();
-  if (a && typeof a[method] === "function") {
-    return a[method](...args);
-  }
-  return Promise.resolve(null);
+  if (transport) return transport.call(method, ...args);
+  return Promise.resolve(null);   // pre-boot; nothing to talk to yet
 }
 
 /* ------------------------------------------------------------- state map */
@@ -609,6 +610,48 @@ function setState(state, detail = "") {
     w.classList.toggle("live", LIVE_STATES.has(state)));
 }
 
+/* ------------------------------------------------------- connection (WS) */
+let connState = "open";
+
+function setConnState(state, reason) {
+  connState = state;
+  const down = (state === "reconnecting" || state === "connecting"
+                || state === "closed");
+  document.body.dataset.conn = state;
+  // Gate every input that needs core: a disconnected UI must not accept a
+  // click it cannot deliver. (Legacy transport never calls this, so the
+  // in-process build is unaffected.)
+  ["#send-btn", "#mic-btn", "#toggle-wake", "#toggle-voice",
+   "#toggle-hands-free"].forEach(sel => {
+    const el = $(sel);
+    if (el) el.disabled = down;
+  });
+  const banner = $("#conn-banner");
+  if (banner) {
+    banner.classList.toggle("hidden", !down);
+    banner.textContent =
+      state === "reconnecting" ? "Reconnecting to Anna…" :
+      state === "connecting"   ? "Connecting to Anna…" :
+      state === "closed"       ? "Disconnected from Anna" + (reason ? ` (${reason})` : "")
+                               : "";
+  }
+}
+
+/* An approval that could not be delivered (socket down) must fail visibly —
+   never grey the card as if it were resolved. The card stays live; a reconnect
+   re-hydrates it by id from full_state and it can be approved again. */
+function markCardUnsent(card) {
+  if (!card) return;
+  card.classList.add("unsent");
+  let note = card.querySelector(".confirm-unsent");
+  if (!note) {
+    note = document.createElement("div");
+    note.className = "confirm-unsent";
+    card.appendChild(note);
+  }
+  note.textContent = "Couldn't reach Anna — reconnecting. Nothing was done; try again in a moment.";
+}
+
 /* --------------------------------------------------------------- modals */
 function openModal(title, bodyHtml) {
   $("#modal-title").textContent = title;
@@ -1032,6 +1075,11 @@ const handlers = {
       .forEach(c => c.classList.add("resolved"));
   },
 
+  // Phase 0, commit 5: honest connection state from the WsTransport. The UI
+  // must never look live while the socket is down — show a banner, gate input,
+  // and let the full_state that follows a reconnect rebuild everything.
+  connection: (p) => setConnState((p && p.state) || "open", (p && p.reason) || ""),
+
   toggle_sync: (p) => {
     const map = { wake_word: "#toggle-wake", voice: "#toggle-voice",
                   hands_free: "#toggle-hands-free" };
@@ -1347,9 +1395,15 @@ document.addEventListener("DOMContentLoaded", () => {
   document.body.addEventListener("click", (e) => {
     const confirmBtn = e.target.closest("[data-confirm]");
     if (confirmBtn) {
+      const card = confirmBtn.closest(".confirm-card");
+      // Honest resolution: the card is only greyed when CORE says so (the
+      // confirm_resolved event), never optimistically. While the socket is
+      // down the buttons are disabled; if a click still races the drop, the
+      // approve REJECTS and we say so — we never pretend it landed.
+      if (transport && !transport.isOpen()) { markCardUnsent(card); return; }
       call("confirm", parseInt(confirmBtn.dataset.confirm, 10),
-           confirmBtn.dataset.approved === "1");
-      confirmBtn.closest(".confirm-card").classList.add("resolved");
+           confirmBtn.dataset.approved === "1")
+        .catch(() => markCardUnsent(card));
       return;
     }
     const detailsBtn = e.target.closest("[data-details]");
@@ -1383,6 +1437,21 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 });
 
-/* handshake: tell Python the dispatcher exists, receive full_state */
-window.addEventListener("pywebviewready", () => call("ready"));
-if (window.pywebview && window.pywebview.api) call("ready");
+/* boot: pick a transport, then hand off the dispatcher.
+   - Split build: anna-ui exposes get_ws_config() → WsTransport connects to
+     anna-core; core pushes full_state on hello_ok (no explicit ready()).
+   - Legacy build: no ws config → LegacyTransport, and we call ready() to
+     trigger full_state exactly as before. */
+let booted = false;
+async function boot() {
+  if (booted) return;
+  booted = true;
+  transport = await AnnaTransport.create();
+  if (transport instanceof AnnaTransport.LegacyTransport) call("ready");
+}
+window.addEventListener("pywebviewready", boot);
+// Plain-browser / already-injected cases: boot once the DOM is up too.
+if (document.readyState !== "loading") boot();
+else document.addEventListener("DOMContentLoaded", () => {
+  if (window.pywebview && window.pywebview.api) boot();
+});

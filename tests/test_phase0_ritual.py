@@ -136,6 +136,10 @@ class Stack:
         # Deterministic router/executor at the EDGES; validator + confirmation
         # manager + pipeline remain production code.
         self.controller.pipeline.agent = self.agent
+        # Synchronous execution: a SAFETY ritual asserts "did the tool run?"
+        # the instant a card resolves — it must not race a worker thread. The
+        # validator/confirmation path is identical either way.
+        self.controller.pipeline.run_async = False
         self.wire = Wire(self.core.url)
 
     @property

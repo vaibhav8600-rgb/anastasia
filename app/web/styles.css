@@ -666,3 +666,26 @@ body.stt-streaming #mic-btn.recording::before {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* Phase 0, commit 5 — honest connection state (WsTransport only). */
+#conn-banner {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 200;
+  text-align: center; padding: 6px 12px; font-size: 12.5px; font-weight: 600;
+  color: #fff; background: linear-gradient(135deg, #b45309, #92400e);
+  box-shadow: 0 2px 10px rgba(0,0,0,.35); letter-spacing: .2px;
+}
+#conn-banner.hidden { display: none; }
+/* A disconnected UI must LOOK disconnected — dim it and refuse pointer input
+   on the controls the transport also disables. */
+body[data-conn="reconnecting"], body[data-conn="connecting"],
+body[data-conn="closed"] { }
+body[data-conn="reconnecting"] #core,
+body[data-conn="connecting"] #core,
+body[data-conn="closed"] #core { opacity: .6; }
+button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
+/* An approval that never reached core: the card stays live (not greyed like
+   .resolved), with a visible note — it must not read as done. */
+.confirm-card.unsent { outline: 1px solid var(--warn); }
+.confirm-card .confirm-unsent {
+  margin-top: 8px; font-size: 12px; color: var(--warn); font-weight: 600;
+}

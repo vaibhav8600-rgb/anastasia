@@ -1706,6 +1706,11 @@ def main() -> None:
         from app.core.daemon import run_daemon
         sys.exit(run_daemon(sys.argv))
 
+    # Phase 0: thin window client that talks to a running --core (commit 5).
+    if "--ui" in sys.argv:
+        from app.anna_ui import run_ui
+        sys.exit(run_ui(sys.argv))
+
     import webview
 
     from app.web.bridge import JsApi, UIBridge
