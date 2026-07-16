@@ -156,6 +156,17 @@ Protocol §11. Any failure = the phase failed, however good the new feature is.
 | S7 | Trigger a risky action, then say a random word ("banana") | **NOT** treated as approval; the card stays parked | ☐ |
 | S8 | Read the logs **and the event DB** after the session | No passwords, no API keys, no screen text, no raw audio | ☐ |
 
+**2026-07-16 — S1–S8 executed THROUGH THE DAEMON PATH (commit 4), automated:**
+`tests/test_phase0_ritual.py` drives a real WebSocket → ProtocolSession →
+JsApi → Controller → pipeline → REAL validator → REAL confirmation manager
+(only the plan router and executor are pinned fakes). All eight pass, plus a
+live smoke of `python app\main.py --core`: real token handshake, `hello_ok`
+first, `full_state` re-hydration, wrong token → `auth_failed` + close.
+**Still manual, for the half-B human run:** S4's first half (the OCR pre-scan
+refusing a REAL password page on screen), S6 with the real camera / a live
+Gemini session and the visible badges, and everything voice-spoken (the
+automated run types; you should say it).
+
 ---
 
 ## Sign-off

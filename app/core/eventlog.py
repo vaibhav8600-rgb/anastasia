@@ -516,3 +516,29 @@ class EventLog:
             except Exception:
                 pass
         return {"markers": int(n), "dropped": dropped}
+
+    def error_summary(self, component: str, hours: float = 24.0) -> dict:
+        """Persisted error rows for one component inside the window — another
+        separate-process reader for --doctor (a burst of "ipc-auth" failures
+        means something local is knocking with the wrong token)."""
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(hours=hours)).isoformat(
+            timespec="seconds")
+        try:
+            conn = sqlite3.connect(str(self.path))
+            rows = conn.execute(
+                "SELECT ts, payload_json FROM events "
+                "WHERE type='error' AND ts >= ?", (cutoff,)).fetchall()
+            conn.close()
+        except Exception as e:
+            devlog.warn(f"eventlog: error read failed ({e})")
+            return {"count": 0, "last": ""}
+        count, last = 0, ""
+        for ts, payload_json in rows:
+            try:
+                if json.loads(payload_json).get("component") == component:
+                    count += 1
+                    last = max(last, ts)
+            except Exception:
+                pass
+        return {"count": count, "last": last}

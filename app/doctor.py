@@ -87,13 +87,24 @@ def run_doctor() -> int:
     # a doctor-level fact, not something buried in the rows (Phase 0).
     from app.core.eventlog import DEFAULT_PATH, EventLog
     if DEFAULT_PATH.exists():
-        gaps = EventLog(DEFAULT_PATH, start=False).gap_summary()
+        log = EventLog(DEFAULT_PATH, start=False)
+        gaps = log.gap_summary()
         if gaps["markers"]:
             _line(False, f"Event log has {gaps['markers']} audit gap(s) — "
                          f"{gaps['dropped']} event(s) dropped under load. "
                          f"Inspect: python app/main.py --dump-events", warn=True)
         else:
             _line(True, "Event log intact (no audit gaps)")
+        # Failed IPC handshakes (commit 4): a burst means some local process
+        # is knocking on Anna's socket with the wrong token — surfaced here,
+        # not buried in rows. The server rate-limits after 5 in 60s.
+        auth = log.error_summary("ipc-auth", hours=24.0)
+        if auth["count"]:
+            _line(False, f"{auth['count']} failed IPC auth attempt(s) in the "
+                         f"last 24h (latest {auth['last']}) — inspect: "
+                         f"python app/main.py --dump-events", warn=True)
+        else:
+            _line(True, "No failed IPC auth attempts (24h)")
     else:
         _line(True, "Event log not started yet")
 

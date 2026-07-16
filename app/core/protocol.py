@@ -164,13 +164,13 @@ class ProtocolSession:
                 "expected_version": PROTOCOL_VERSION,
                 "got_version": got if isinstance(got, (int, str)) else None}))
         if validate(msg) is not None or msg["type"] != "hello":
-            self._audit("pre-auth frame was not a hello")
+            self._audit("pre-auth frame was not a hello", component="ipc-auth")
             return self._close(make("auth_failed",
                                     {"reason": "not-authenticated"}))
         supplied = msg["payload"].get("token")
         if not token_matches(supplied, self._token):
             # Never say whether the token was absent, short or nearly right.
-            self._audit("bad or missing token")
+            self._audit("bad or missing token", component="ipc-auth")
             return self._close(make("auth_failed", {"reason": "bad-token"}))
         self.state = "ready"
         self.client = str(msg["payload"].get("client") or "")[:80]
@@ -238,17 +238,20 @@ class ProtocolSession:
         self.state = "closed"
         return [frame]
 
-    def _audit(self, message: str, *, ok: bool = False) -> None:
+    def _audit(self, message: str, *, ok: bool = False,
+               component: str = "ipc") -> None:
         """Devlog + event log. Never includes token material — `message` is
-        always our own words, never client bytes."""
+        always our own words, never client bytes. Auth failures are tagged
+        component="ipc-auth" so --doctor can count them (a burst of failed
+        logins on the local socket is a doctor-level fact)."""
         (devlog.log if ok else devlog.warn)(f"[ipc] {message}")
         if self._eventlog is not None:
             try:
                 self._eventlog.emit("error" if not ok else "engine_state",
                                     source="ipc",
-                                    **({"component": "ipc", "message": message}
+                                    **({"component": component, "message": message}
                                        if not ok else
-                                       {"component": "ipc", "state": "ready",
+                                       {"component": component, "state": "ready",
                                         "reason": message}))
             except Exception:
                 pass

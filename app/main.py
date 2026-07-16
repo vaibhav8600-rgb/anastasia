@@ -1701,6 +1701,11 @@ def main() -> None:
         from app.core.inspect_events import run_cli
         sys.exit(run_cli(sys.argv))
 
+    # Phase 0: headless daemon — the core without a window (commit 4).
+    if "--core" in sys.argv:
+        from app.core.daemon import run_daemon
+        sys.exit(run_daemon(sys.argv))
+
     import webview
 
     from app.web.bridge import JsApi, UIBridge
