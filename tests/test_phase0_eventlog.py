@@ -54,7 +54,9 @@ def db_text(el) -> str:
 
 def test_append_only_wal_schema(log):
     log.emit("user_turn", source="voice", text="open paint", route="rule")
-    log.flush()
+    # flush() waits for the row to be COMMITTED, not merely dequeued, and
+    # admits a timeout instead of pretending — assert it, don't hope.
+    assert log.flush(timeout=10)
     rows = log.recent()
     assert len(rows) == 1
     row = rows[0]
@@ -80,7 +82,10 @@ def test_one_writer_survives_many_threads(log):
         t.start()
     for t in threads:
         t.join()
-    log.flush(timeout=5)
+    # Generous ceiling; flush returns the moment all 200 are settled. Under
+    # full-suite CPU load the old queue-empty check timed out silently and
+    # this assertion read a half-written log.
+    assert log.flush(timeout=30)
     assert len(log.recent(limit=500)) == 200      # 8 x 25, none lost, no corruption
 
 

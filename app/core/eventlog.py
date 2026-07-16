@@ -234,6 +234,12 @@ class EventLog:
         self.dropped = 0            # queue-full drops (never blocks a turn)
         self.written = 0
         self.spilled = 0            # rows written to the JSONL fallback
+        # flush() durability accounting (both guarded by _drop_lock):
+        self._accepted = 0          # rows that entered the queue
+        self._settled = 0           # rows that reached a FINAL fate: committed,
+        #                             spilled, or admitted-dropped. Queue-empty
+        #                             is NOT settled — the writer may hold a
+        #                             popped row it hasn't committed yet.
         if start:
             self.start()
 
@@ -311,6 +317,8 @@ class EventLog:
             return False
         try:
             self._q.put_nowait(row)
+            with self._drop_lock:
+                self._accepted += 1
             return True
         except queue.Full:
             pass
@@ -319,15 +327,17 @@ class EventLog:
                 self._q.get_nowait()
                 self.dropped += 1
                 self._gap += 1
+                self._settled += 1                # dropped IS a final fate
             except queue.Empty:
                 pass
             try:
                 self._q.put_nowait(row)
+                self._accepted += 1
                 keep = True
             except queue.Full:                    # writer wedged: lose this one too
                 self.dropped += 1
                 self._gap += 1
-                keep = False
+                keep = False                      # never accepted -> not counted
             gap = self._gap
         if gap in (1, 100, 1000):                 # don't spam the devlog
             devlog.warn(f"eventlog: queue full — {gap} events dropped so far "
@@ -378,6 +388,8 @@ class EventLog:
                 try:
                     self._write(conn, row)
                     self.written += 1
+                    with self._drop_lock:
+                        self._settled += 1        # committed — flush() may return
                     self._record_success()
                     self._write_gap_marker(conn)   # caught up? admit any loss
                     continue
@@ -389,6 +401,8 @@ class EventLog:
                         pass
                     conn = None
             self._spill(row)                      # circuit open / no connection
+            with self._drop_lock:
+                self._settled += 1                # spilled (or lost trying) — final
 
         if conn is not None:
             try:
@@ -425,12 +439,26 @@ class EventLog:
             pass          # last resort: drop. Never raise on the writer thread.
 
     # --------------------------------------------------------------- reading
-    def flush(self, timeout: float = 2.0) -> None:
-        """Block until the queue drains (tests, and Quit)."""
+    def flush(self, timeout: float = 2.0) -> bool:
+        """Block until every event accepted so far is SETTLED — committed to
+        SQLite, spilled to the fallback, or admitted as dropped.
+
+        Returns False on timeout instead of pretending. Queue-emptiness is
+        deliberately not the test: the writer pops a row *before* committing
+        it, so an empty queue can still mean an unwritten event — under CPU
+        load that window is long enough for a reader to see nothing and for a
+        "no silent loss" suite to fail vacuously (which is how this bug was
+        caught)."""
+        with self._drop_lock:
+            target = self._accepted
         deadline = time.monotonic() + timeout
-        while not self._q.empty() and time.monotonic() < deadline:
+        while time.monotonic() < deadline:
+            with self._drop_lock:
+                if self._settled >= target:
+                    return True
             time.sleep(0.01)
-        time.sleep(0.02)      # let the in-flight row commit
+        with self._drop_lock:
+            return self._settled >= target
 
     def recent(self, limit: int = 50, event_type: str = None) -> list:
         """Newest first. Own short-lived connection — never the writer's."""
@@ -462,3 +490,29 @@ class EventLog:
                 "spilled": self.spilled, "queued": self._q.qsize(),
                 "circuit": "open" if self.circuit_open() else "closed",
                 "db_bytes": size}
+
+    def gap_summary(self) -> dict:
+        """Durable audit-hole facts, read from the persisted rows.
+
+        Unlike stats() (which reports this process's live counters), this reads
+        the log_gap MARKERS on disk, so a separate process — `--doctor` — can
+        see that events were once dropped and how many. An audit log with holes
+        in it is a doctor-level fact, not a buried row.
+        """
+        try:
+            conn = sqlite3.connect(str(self.path))
+            n = conn.execute(
+                "SELECT COUNT(*) FROM events WHERE type='log_gap'").fetchone()[0]
+            payloads = conn.execute(
+                "SELECT payload_json FROM events WHERE type='log_gap'").fetchall()
+            conn.close()
+        except Exception as e:
+            devlog.warn(f"eventlog: gap read failed ({e})")
+            return {"markers": 0, "dropped": 0}
+        dropped = 0
+        for (payload_json,) in payloads:
+            try:
+                dropped += int(json.loads(payload_json).get("dropped", 0))
+            except Exception:
+                pass
+        return {"markers": int(n), "dropped": dropped}
