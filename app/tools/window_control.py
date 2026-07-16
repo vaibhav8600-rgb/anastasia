@@ -3,7 +3,7 @@ Always requires confirmation (enforced by agent/safety.py)."""
 
 import re
 
-from app.tools import ToolContext, ToolResult, tool
+from app.tools import Tier, ToolContext, ToolResult, tool
 
 _ACTIONS = {
     "close": ("alt", "f4"),
@@ -95,7 +95,12 @@ def _is_own_window(title: str, ctx: ToolContext) -> bool:
     return any(marker and marker in low for marker in own)
 
 
-@tool("window_control")
+@tool("window_control", tier=Tier.CONFIRM, offline_ok=True,
+      description="Close, minimize or maximize a named app window (needs "
+                  "confirmation; never closes Anna's own window).",
+      schema={"action": ("string", "close | minimize | maximize"),
+              "app": ("string", "the app whose window to act on")},
+      required=("action",))
 def window_control(args: dict, ctx: ToolContext) -> ToolResult:
     action = str(args.get("action") or "").lower().strip()
     if action not in _ACTIONS:

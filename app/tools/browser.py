@@ -4,7 +4,7 @@ import re
 import urllib.parse
 import webbrowser
 
-from app.tools import ToolContext, ToolResult, tool
+from app.tools import Tier, ToolContext, ToolResult, tool
 
 _DOMAIN_RE = re.compile(r"^[\w\-]+(\.[\w\-]+)+(/\S*)?$")
 
@@ -55,7 +55,10 @@ def build_target(args: dict) -> str | None:
     return None
 
 
-@tool("browser_open")
+@tool("browser_open", tier=Tier.SAFE, offline_ok=True,
+      description="Open a URL or a web search in the default browser.",
+      schema={"url": ("string", "URL to open"),
+              "query": ("string", "text to search for instead of a URL")})
 def browser_open(args: dict, ctx: ToolContext) -> ToolResult:
     target = build_target(args)
     if not target:

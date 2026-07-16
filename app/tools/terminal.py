@@ -4,13 +4,18 @@ patterns blocked) AND explicit user confirmation in the GUI."""
 import subprocess
 from pathlib import Path
 
-from app.tools import ToolContext, ToolResult, tool
+from app.tools import Tier, ToolContext, ToolResult, tool
 
 _TIMEOUT = 90
 _MAX_OUTPUT = 1500
 
 
-@tool("run_terminal")
+@tool("run_terminal", tier=Tier.CONFIRM, offline_ok=True,
+      description="Run a PowerShell command. Dangerous patterns are blocked "
+                  "outright; every run requires explicit confirmation.",
+      schema={"command": ("string", "the PowerShell command to run"),
+              "cwd": ("string", "optional working directory (must be a safe folder)")},
+      required=("command",))
 def run_terminal(args: dict, ctx: ToolContext) -> ToolResult:
     command = str(args.get("command") or "").strip()
     if not command:

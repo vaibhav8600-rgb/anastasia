@@ -1,6 +1,6 @@
 """clipboard_read / clipboard_write / summarize_clipboard."""
 
-from app.tools import ToolContext, ToolResult, tool
+from app.tools import Tier, ToolContext, ToolResult, tool
 
 _MAX_SUMMARY_INPUT = 6000
 
@@ -10,7 +10,9 @@ def _clip():
     return pyperclip
 
 
-@tool("clipboard_read")
+@tool("clipboard_read", tier=Tier.SAFE, offline_ok=True, exports_clipboard=True,
+      description="Read the current clipboard text.",
+      schema={})
 def clipboard_read(args: dict, ctx: ToolContext) -> ToolResult:
     text = _clip().paste() or ""
     if not text.strip():
@@ -19,7 +21,10 @@ def clipboard_read(args: dict, ctx: ToolContext) -> ToolResult:
     return ToolResult(True, f"Your clipboard says: {preview}", data=text)
 
 
-@tool("clipboard_write")
+@tool("clipboard_write", tier=Tier.SAFE, offline_ok=True,
+      description="Put text on the clipboard.",
+      schema={"text": ("string", "text to copy")},
+      required=("text",))
 def clipboard_write(args: dict, ctx: ToolContext) -> ToolResult:
     text = str(args.get("text") or "")
     if not text:
@@ -28,7 +33,10 @@ def clipboard_write(args: dict, ctx: ToolContext) -> ToolResult:
     return ToolResult(True, f"Copied {len(text)} characters to your clipboard.")
 
 
-@tool("summarize_clipboard")
+@tool("summarize_clipboard", tier=Tier.SAFE, offline_ok=True, exports_clipboard=True,
+      description="Summarize the clipboard text with the local model "
+                  "(reaches the cloud only with the clipboard opt-in).",
+      schema={})
 def summarize_clipboard(args: dict, ctx: ToolContext) -> ToolResult:
     text = (_clip().paste() or "").strip()
     if not text:

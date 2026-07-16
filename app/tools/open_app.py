@@ -5,7 +5,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from app.tools import ToolContext, ToolResult, tool
+from app.tools import Tier, ToolContext, ToolResult, tool
 
 # Normalized spoken name -> canonical alias key
 SYNONYMS = {
@@ -54,7 +54,10 @@ def _launch(command: str) -> None:
     subprocess.Popen(f'start "" {command}', shell=True)
 
 
-@tool("open_app")
+@tool("open_app", tier=Tier.SAFE, offline_ok=True,
+      description="Open one of the user's registered apps by name.",
+      schema={"app_name": ("string", "a registered app alias")},
+      required=("app_name",))
 def open_app(args: dict, ctx: ToolContext) -> ToolResult:
     name = str(args.get("app_name") or args.get("name") or args.get("app") or "").strip()
     if not name:

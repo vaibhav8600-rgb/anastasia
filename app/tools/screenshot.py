@@ -9,7 +9,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from app.tools import ToolContext, ToolResult, tool
+from app.tools import Tier, ToolContext, ToolResult, tool
 
 THUMB_MAX_WIDTH = 320
 THUMB_BUDGET_S = 1.0   # if generation is slower, show the card without preview
@@ -65,7 +65,9 @@ def _monitor_rects() -> list:
         return []
 
 
-@tool("take_screenshot")
+@tool("take_screenshot", tier=Tier.SAFE, offline_ok=True,
+      description="Save a screenshot of the desktop (or one monitor) to disk.",
+      schema={"screen": ("integer", "monitor number, or 0 for all screens")})
 def take_screenshot(args: dict, ctx: ToolContext) -> ToolResult:
     # PIL.ImageGrab directly — pyautogui's import chain costs seconds on
     # first use; ImageGrab is what it calls on Windows anyway.

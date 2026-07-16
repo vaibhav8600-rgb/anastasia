@@ -213,6 +213,28 @@ def _escalate(current: str, minimum: str) -> str:
     return max(current, minimum, key=_RISK_ORDER.index)
 
 
+def _declared_floor_risk(tool: str) -> str:
+    """A tool's DECLARED tier, expressed as a FLOOR the validator may only RAISE.
+
+    This is the load-bearing half of "permission_tier is a floor, never a
+    ceiling" (Phase 0). The floor is *added* to whatever the runtime rules below
+    compute — it can lift a lazily-declared action up to its minimum, but it can
+    never pull a genuinely dangerous one down. A tool that declares itself
+    tier-0 SAFE is believed about its floor (low) and ignored about everything
+    else: the destructive-target, dangerous-command, password-field and
+    vision-guess checks all still run and still escalate.
+
+    A name that isn't in the registry (``send_message``, ``speak``,
+    ``no_action`` — validated intents with no @tool function) contributes no
+    floor; the runtime rules alone govern it, exactly as before.
+    """
+    from app.tools import TIER_RISK, Tier, tool_spec
+    spec = tool_spec(tool)
+    if spec is None or spec.tier >= Tier.BLOCKED:
+        return "low"
+    return TIER_RISK.get(spec.tier, "low")
+
+
 def _norm_hotkey(keys) -> str:
     if isinstance(keys, (list, tuple)):
         keys = "+".join(str(k) for k in keys)
@@ -254,7 +276,13 @@ def validate_action(plan, config) -> SafetyResult:
     risk = str(plan.risk_level or "low").lower()
     if risk not in _RISK_ORDER:
         risk = "low"
-    requires = bool(plan.requires_confirmation)
+    # Apply the tool's DECLARED tier as a floor FIRST, so every runtime rule
+    # below can still only push higher (never lower). A CONFIRM-tier tool starts
+    # at medium-and-needs-confirmation even before its specific branch runs; a
+    # SAFE-tier tool starts wherever the plan put it. See _declared_floor_risk.
+    floor = _declared_floor_risk(tool)
+    risk = _escalate(risk, floor)
+    requires = bool(plan.requires_confirmation) or _RISK_ORDER.index(floor) >= 1
     reason = ""
 
     if tool == "run_terminal":

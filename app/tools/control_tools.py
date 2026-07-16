@@ -8,7 +8,7 @@ to a different control after the user already approved.
 """
 
 from app.control import ResolvedTarget, Scope
-from app.tools import ToolContext, ToolResult, tool
+from app.tools import Tier, ToolContext, ToolResult, tool
 
 
 def _resolver(ctx: ToolContext):
@@ -63,7 +63,11 @@ def _act(args: dict, ctx: ToolContext, text: str = None) -> ToolResult:
     return ToolResult(result.success, result.message, data=payload)
 
 
-@tool("find_control")
+@tool("find_control", tier=Tier.SAFE, offline_ok=True,
+      description="Read-only: locate an on-screen control (UIA/vision) and report what was found.",
+      schema={"hint": ("string", "what to look for"),
+              "app": ("string", "optional app to scope the search to")},
+      required=("hint",))
 def find_control(args: dict, ctx: ToolContext) -> ToolResult:
     """Read-only: locate a control and report what was found."""
     hint = str(args.get("hint") or args.get("target") or "")
@@ -81,12 +85,23 @@ def find_control(args: dict, ctx: ToolContext) -> ToolResult:
                       data=target.to_public())
 
 
-@tool("click_control")
+@tool("click_control", tier=Tier.SAFE, offline_ok=True,
+      description="Click a resolved native control. Declared SAFE, but the "
+                  "validator RAISES to a strong-phrase confirmation whenever the "
+                  "resolved target is destructive (Send/Submit/Pay/…) or a vision guess.",
+      schema={"hint": ("string", "what to click"),
+              "app": ("string", "optional app to scope to")},
+      required=("hint",))
 def click_control(args: dict, ctx: ToolContext) -> ToolResult:
     return _act(args, ctx)
 
 
-@tool("type_into_control")
+@tool("type_into_control", tier=Tier.SAFE, offline_ok=True,
+      description="Type into a resolved native field (never into a password field). "
+                  "SAFE floor; the validator raises on a destructive or guessed target.",
+      schema={"hint": ("string", "the field to type into"),
+              "text": ("string", "the text to type")},
+      required=("hint", "text"))
 def type_into_control(args: dict, ctx: ToolContext) -> ToolResult:
     text = str(args.get("text") or "")
     if not text:
@@ -94,7 +109,9 @@ def type_into_control(args: dict, ctx: ToolContext) -> ToolResult:
     return _act(args, ctx, text=text)
 
 
-@tool("read_window_text")
+@tool("read_window_text", tier=Tier.SAFE, offline_ok=True,
+      description="Read the visible text of a window. Password fields are never read.",
+      schema={"app": ("string", "optional app to scope to")})
 def read_window_text(args: dict, ctx: ToolContext) -> ToolResult:
     """Visible text of a window. Password fields are never read."""
     resolver = _resolver(ctx)
@@ -107,7 +124,10 @@ def read_window_text(args: dict, ctx: ToolContext) -> ToolResult:
 
 # ---- browser (Playwright over CDP) ------------------------------------------
 
-@tool("browser_navigate")
+@tool("browser_navigate", tier=Tier.SAFE, offline_ok=True,
+      description="Navigate the attached browser (Playwright over CDP) to a URL.",
+      schema={"url": ("string", "the URL to open")},
+      required=("url",))
 def browser_navigate(args: dict, ctx: ToolContext) -> ToolResult:
     url = str(args.get("url") or "").strip()
     if not url:
@@ -118,12 +138,21 @@ def browser_navigate(args: dict, ctx: ToolContext) -> ToolResult:
     return ToolResult(result.success, result.message)
 
 
-@tool("browser_find_and_click")
+@tool("browser_find_and_click", tier=Tier.SAFE, offline_ok=True,
+      description="Click an element in the attached browser page. SAFE floor; "
+                  "the validator raises on a destructive or guessed target.",
+      schema={"hint": ("string", "what to click")},
+      required=("hint",))
 def browser_find_and_click(args: dict, ctx: ToolContext) -> ToolResult:
     return _act(args, ctx)
 
 
-@tool("browser_type_into")
+@tool("browser_type_into", tier=Tier.SAFE, offline_ok=True,
+      description="Type into a field in the attached browser page (never a password field). "
+                  "SAFE floor; the validator raises on a destructive or guessed target.",
+      schema={"hint": ("string", "the field to type into"),
+              "text": ("string", "the text to type")},
+      required=("hint", "text"))
 def browser_type_into(args: dict, ctx: ToolContext) -> ToolResult:
     text = str(args.get("text") or "")
     if not text:
@@ -131,7 +160,9 @@ def browser_type_into(args: dict, ctx: ToolContext) -> ToolResult:
     return _act(args, ctx, text=text)
 
 
-@tool("browser_read_page_text")
+@tool("browser_read_page_text", tier=Tier.SAFE, offline_ok=True,
+      description="Read the visible text of the attached browser page.",
+      schema={})
 def browser_read_page_text(args: dict, ctx: ToolContext) -> ToolResult:
     try:
         text = _resolver(ctx).playwright.read_page_text()
@@ -140,7 +171,9 @@ def browser_read_page_text(args: dict, ctx: ToolContext) -> ToolResult:
     return ToolResult(True, text[:2000], data={"chars": len(text)})
 
 
-@tool("browser_get_visible_links")
+@tool("browser_get_visible_links", tier=Tier.SAFE, offline_ok=True,
+      description="List the visible links on the attached browser page.",
+      schema={})
 def browser_get_visible_links(args: dict, ctx: ToolContext) -> ToolResult:
     try:
         links = _resolver(ctx).playwright.get_visible_links()

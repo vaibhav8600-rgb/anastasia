@@ -16,7 +16,7 @@ the 11C control path — never a hidden programmatic send.
 
 import urllib.parse
 
-from app.tools import ToolContext, ToolResult, tool
+from app.tools import Tier, ToolContext, ToolResult, tool
 
 _EMAIL_RE = None
 
@@ -92,7 +92,13 @@ def _provider(ctx: ToolContext, args: dict) -> str:
         else "outlook"
 
 
-@tool("compose_email")
+@tool("compose_email", tier=Tier.SAFE, offline_ok=True,
+      description="Open a pre-filled email DRAFT (Gmail in the browser or Outlook). "
+                  "Shows a preview and sends nothing.",
+      schema={"to": ("string", "recipient(s)"),
+              "subject": ("string", "the subject line"),
+              "body": ("string", "the message body")},
+      required=("to",))
 def compose_email(args: dict, ctx: ToolContext) -> ToolResult:
     """Open a pre-filled draft (Gmail in the browser, or Outlook via mailto).
     Shows a preview; sends nothing."""
@@ -134,7 +140,12 @@ def compose_email(args: dict, ctx: ToolContext) -> ToolResult:
         data={"preview": preview, "provider": provider})
 
 
-@tool("send_email")
+@tool("send_email", tier=Tier.CONFIRM, offline_ok=False,
+      description="Send the open draft by clicking the real Send button. Needs a "
+                  "clear recipient and confirmation; the Send click is itself a "
+                  "destructive target, so the strong phrase is demanded.",
+      schema={"to": ("string", "recipient(s) — must resolve to a real address")},
+      required=("to",))
 def send_email(args: dict, ctx: ToolContext) -> ToolResult:
     """Send the open draft. The validator has already forced confirmation and
     checked the recipient; here we click the real Send button via the 11C

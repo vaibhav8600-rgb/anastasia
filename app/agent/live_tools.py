@@ -13,8 +13,13 @@ name; every request lands here, where:
      so screenshots, file contents and clipboard payloads physically cannot
      ride a tool response to the cloud.
 
-Declarations are derived from TOOL_REGISTRY ∩ (SAFE_TOOLS | CONFIRM_TOOLS):
-a tool the local policy would block can never be declared, and an undeclared
+The *eligible set* is owned by the tool registry, not by this file. Phase 0's
+`app.tools.cloud_manifest(config)` is the single authority on what may be named
+to a cloud model: it drops `Tier.BLOCKED`, drops `cloud_declarable=False`
+(delete_files), and — when the clipboard opt-in is off — drops the
+clipboard-exporting tools. This module only supplies the engine-specific schema
+prose and intersects it with that manifest, so a tool the registry forbids can
+never be declared here no matter what is added to `_DECLARATIONS`. An undeclared
 tool the model hallucinates anyway still hits the same validator.
 """
 
@@ -22,17 +27,20 @@ import json
 import threading
 
 from app.agent.devlog import devlog
-from app.agent.safety import (BLOCKED_TOOLS, CONFIRM_TOOLS, SAFE_TOOLS,
-                              validate_action)
+from app.agent.safety import validate_action
 from app.llm.intent_parser import ActionPlan
 from app.llm.providers import DataClass, cloud_allowed
 
-# Destructive stub in the MVP — pointless and provocative to advertise.
+# Destructive stub in the MVP — pointless and provocative to advertise. The
+# registry now ENFORCES this (delete_files is cloud_declarable=False); this
+# constant remains as the human-readable statement of intent, and a test pins
+# the two together so they cannot drift.
 NEVER_DECLARE = {"delete_files"}
 
-# These tools' result MESSAGE contains clipboard text; a tool response goes
-# to Google, so they follow the 8C clipboard opt-in (gated at declaration
-# time AND again at call time in case the model calls them undeclared).
+# These tools' result MESSAGE contains clipboard text; a tool response goes to
+# Google, so they follow the 8C clipboard opt-in — gated at declaration time (by
+# the registry, via exports_clipboard) AND again at call time here, in case the
+# model calls one undeclared. A test pins this set to the registry's.
 CLIPBOARD_EXPORTING = {"clipboard_read", "summarize_clipboard"}
 
 
@@ -120,18 +128,21 @@ _DECLARATIONS = {
 
 
 def live_tool_declarations(config) -> list:
-    """Tools declared to the Live session, in SDK dict form. Triple-gated:
-    a name must be in the registry AND the local safety whitelist AND have a
-    schema here. BLOCKED_TOOLS can never appear (they're outside the
-    whitelist; the explicit subtraction documents the intent)."""
-    from app.tools import TOOL_REGISTRY, _load_all
-    _load_all()
-    allowed = (SAFE_TOOLS | CONFIRM_TOOLS) - BLOCKED_TOOLS - NEVER_DECLARE
-    clip_ok, _ = cloud_allowed({DataClass.CLIPBOARD}, config)
-    if not clip_ok:
-        allowed -= CLIPBOARD_EXPORTING
+    """Tools declared to the Live session, in Gemini SDK dict form.
+
+    The eligible SET is the registry's cloud manifest — the single authority on
+    what may reach a cloud model. `cloud_manifest(config)` has already removed
+    every blocked tool, every `cloud_declarable=False` tool (delete_files), and,
+    when the clipboard opt-in is off, the clipboard-exporting tools. This
+    function only supplies the per-engine schema prose and keeps the
+    intersection with what it can describe. A blocked tool cannot appear here
+    even if someone adds a schema for it to `_DECLARATIONS`, because it was never
+    in the manifest.
+    """
+    from app.tools import cloud_manifest
+    eligible = {spec.name for spec in cloud_manifest(config)}
     decls = [{"name": name, **_DECLARATIONS[name]}
-             for name in sorted(allowed & set(TOOL_REGISTRY) & set(_DECLARATIONS))]
+             for name in sorted(eligible & set(_DECLARATIONS))]
     return [{"function_declarations": decls}] if decls else []
 
 

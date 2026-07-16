@@ -82,4 +82,19 @@ def run_doctor() -> int:
     else:
         _line(True, "Wake word disabled")
 
+    # Event-log integrity: were events ever dropped under load? A log_gap marker
+    # is a durable admission of a hole; surfacing it here means an audit hole is
+    # a doctor-level fact, not something buried in the rows (Phase 0).
+    from app.core.eventlog import DEFAULT_PATH, EventLog
+    if DEFAULT_PATH.exists():
+        gaps = EventLog(DEFAULT_PATH, start=False).gap_summary()
+        if gaps["markers"]:
+            _line(False, f"Event log has {gaps['markers']} audit gap(s) — "
+                         f"{gaps['dropped']} event(s) dropped under load. "
+                         f"Inspect: python app/main.py --dump-events", warn=True)
+        else:
+            _line(True, "Event log intact (no audit gaps)")
+    else:
+        _line(True, "Event log not started yet")
+
     return 0 if ok else 1

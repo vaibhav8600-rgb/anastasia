@@ -4,7 +4,7 @@ delete_files is a stub: destructive deletion is disabled in the MVP."""
 import os
 from pathlib import Path
 
-from app.tools import ToolContext, ToolResult, tool
+from app.tools import Tier, ToolContext, ToolResult, tool
 
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv",
               "AppData", "$RECYCLE.BIN", ".cache"}
@@ -33,7 +33,10 @@ def resolve_safe_folder(raw: str, config) -> Path | None:
     return None
 
 
-@tool("open_folder")
+@tool("open_folder", tier=Tier.SAFE, offline_ok=True,
+      description="Open one of the user's safe folders in Explorer.",
+      schema={"folder": ("string", "safe-folder name or an absolute path inside one")},
+      required=("folder",))
 def open_folder(args: dict, ctx: ToolContext) -> ToolResult:
     raw = str(args.get("folder") or args.get("path") or args.get("target_path") or "")
     folder = resolve_safe_folder(raw, ctx.config)
@@ -48,7 +51,11 @@ def open_folder(args: dict, ctx: ToolContext) -> ToolResult:
     return ToolResult(True, f"There you go — your {folder.name} folder is open.")
 
 
-@tool("search_files")
+@tool("search_files", tier=Tier.SAFE, offline_ok=True,
+      description="Search the user's safe folders for files whose name matches a query.",
+      schema={"query": ("string", "text to match in file names"),
+              "folder": ("string", "optional safe folder to limit the search to")},
+      required=("query",))
 def search_files(args: dict, ctx: ToolContext) -> ToolResult:
     query = str(args.get("query") or args.get("name") or "").strip()
     if not query:
@@ -89,7 +96,10 @@ def search_files(args: dict, ctx: ToolContext) -> ToolResult:
     )
 
 
-@tool("delete_files")
+@tool("delete_files", tier=Tier.CONFIRM, offline_ok=True, cloud_declarable=False,
+      description="Deletion is disabled in this build; the tool always declines. "
+                  "Never named to a cloud model (NEVER_DECLARE).",
+      schema={"target": ("string", "the file(s) the user named")})
 def delete_files(args: dict, ctx: ToolContext) -> ToolResult:
     # Deliberate stub — per MVP safety policy, deletion is never executed.
     return ToolResult(
