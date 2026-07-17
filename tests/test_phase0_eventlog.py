@@ -41,8 +41,16 @@ def db_text(el) -> str:
     assertion passes vacuously against an empty file — and a human grepping the
     DB for their API key would be reassured by nothing. M0.5 means the whole
     directory.
+
+    The flush VERDICT is asserted, not hoped for: every secret-absence check in
+    this file reads through here, and an unflushed log would let "secret not on
+    disk" pass simply because the row hasn't landed yet — the same silent-flush
+    trap the durability work already closed once. A generous timeout returns the
+    instant the queue settles, so this costs nothing when healthy.
     """
-    el.flush()
+    assert el.flush(timeout=10), (
+        "event log did not flush — a secret-absence check here would be reading "
+        "a half-written log, so its verdict cannot be trusted")
     body = []
     for path in sorted(el.path.parent.iterdir()):
         if path.is_file():
@@ -138,7 +146,7 @@ def test_resolved_target_is_audited_without_its_pixels(log):
                    "_resolved": {"name": "Send", "control_type": "button",
                                  "backend": "playwright", "confidence": 1.0,
                                  "crop_data_url": FAKE_B64_IMAGE}})
-    log.flush()
+    assert log.flush(timeout=10)
     resolved = log.recent()[0]["payload"]["args"]["_resolved"]
 
     # the audit survives, in full
@@ -159,7 +167,7 @@ def test_resolved_target_is_audited_without_its_pixels(log):
 def test_raw_bytes_become_a_descriptor(log):
     """Raw audio is bytes. It can never be logged — but its presence can be."""
     log.emit("tool_call", tool="run_terminal", args={"blob": b"\x00\xff" * 4000})
-    log.flush()
+    assert log.flush(timeout=10)
     blob = log.recent()[0]["payload"]["args"]["blob"]
     assert blob["dropped"] == "binary" and blob["bytes"] == 8000
     assert "\\x00" not in db_text(log)
@@ -194,7 +202,7 @@ def test_screen_text_and_file_contents_cannot_be_logged(log):
 
     screenful = "CONFIDENTIAL LINE. " * 500          # ~9500 chars
     log.emit("user_turn", text=screenful, route="chat")
-    log.flush()
+    assert log.flush(timeout=10)
 
     stored = log.recent()[0]["payload"]["text"]
     assert len(stored) < VALUE_MAX_CHARS + 40        # capped, not stored whole
@@ -238,7 +246,9 @@ def test_ordinary_events_survive_all_four_layers_intact(log):
              reason="Terminal commands always require confirmation.")
     log.emit("confirmation", tool="run_terminal", outcome="approved",
              strong_required=True, channel="voice", salience=0.8)
-    log.flush()
+    # Assert the verdict: recent() below reads rows, and an unflushed log would
+    # make the over-redaction assertions fail (or worse, pass) on a partial read.
+    assert log.flush(timeout=10)
 
     rows = {r["type"]: r for r in log.recent()}
 
@@ -279,7 +289,7 @@ def test_talking_about_a_password_is_not_a_password(log):
     log.emit("user_turn", text="how do I reset my password on GitHub", route="chat")
     log.emit("tool_call", tool="browser_type_into",
              args={"field": "password", "password": "hunter2"})
-    log.flush()
+    assert log.flush(timeout=10)
     rows = log.recent()
 
     turn = next(r for r in rows if r["type"] == "user_turn")
@@ -295,7 +305,7 @@ def test_a_full_length_legitimate_value_is_not_truncated(log):
     from app.core.eventlog import VALUE_MAX_CHARS
     sentence = "a" * (VALUE_MAX_CHARS - 1)
     log.emit("error", component="brain", message=sentence)
-    log.flush()
+    assert log.flush(timeout=10)
     assert log.recent()[0]["payload"]["message"] == sentence   # untouched
 
 
@@ -384,7 +394,7 @@ def test_secret_scanner_reads_the_wal_not_just_the_sqlite(tmp_path, monkeypatch)
 
     el = EventLog(path)                       # writer stays OPEN, as in a session
     el.emit("user_turn", text="a distinctive marker phrase", route="chat")
-    el.flush()
+    assert el.flush(timeout=10)
 
     names = [f.name for f in inspect.log_files(path)]
     assert any(n.endswith("-wal") for n in names), "the -wal file was not scanned"
@@ -412,7 +422,7 @@ def test_secret_scanner_would_actually_catch_a_leak(tmp_path, monkeypatch):
 
 def test_stats_are_honest(log):
     log.emit("user_turn", text="hi")
-    log.flush()
+    assert log.flush(timeout=10)
     stats = log.stats()
     assert stats["written"] == 1 and stats["dropped"] == 0
     assert stats["circuit"] == "closed" and stats["db_bytes"] > 0
