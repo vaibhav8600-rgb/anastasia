@@ -102,8 +102,10 @@ class WhisperWakeWord(threading.Thread):
 
         from app.voice import audio_gate
         from app.voice.recorder import (choose_capture_sample_rate,
+                                        ensure_com_sta,
                                         resolve_microphone_device)
 
+        ensure_com_sta()          # this wake-listener thread opens a stream too
         model_size = getattr(self.config, "wake_word_model", "base")
         try:
             model = WhisperModel(model_size, device="cpu", compute_type="int8")
@@ -218,9 +220,11 @@ class OpenWakeWordListener(threading.Thread):
 
         from app.voice import audio_gate
         from app.voice.recorder import (choose_capture_sample_rate,
+                                        ensure_com_sta,
                                         normalize_audio_for_stt,
                                         resolve_microphone_device)
 
+        ensure_com_sta()          # this wake-listener thread opens a stream too
         device_arg, device_info, _warn = resolve_microphone_device(self.config)
         rate = choose_capture_sample_rate(sd, self.config, device_arg, device_info)
         chunk = max(320, int(rate * 0.08))

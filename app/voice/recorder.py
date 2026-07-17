@@ -6,6 +6,37 @@ import time
 import wave
 from pathlib import Path
 
+_COM_STA_DONE = set()          # thread idents already CoInitializeEx'd (STA)
+_COM_LOCK = threading.Lock()
+
+
+def ensure_com_sta() -> None:
+    """Make the CALLING thread a COM single-threaded apartment (STA).
+
+    Opening a WASAPI / WDM-KS callback-mode input stream requires the opening
+    thread to be a COM STA. The main GUI thread already is (WinForms), which is
+    why legacy single-process worked. Under the Phase-0 split, mic opens land on
+    an asyncio ThreadPoolExecutor worker (WS request handling) — no COM
+    apartment — and PortAudio fails with `WdmSyncIoctl: DeviceIoControl
+    GLE = 0x00000492`. Empirically (probes 1–4): a single callback open fails on
+    any non-STA thread and succeeds the instant that thread is CoInitializeEx'd
+    STA; open and close may even be on different threads, provided both are STA.
+
+    Idempotent and safe: on an already-STA thread CoInitializeEx returns
+    S_FALSE; on an MTA thread it returns RPC_E_CHANGED_MODE and we leave it be
+    (no such thread opens the mic here). No-op off Windows."""
+    ident = threading.get_ident()
+    if ident in _COM_STA_DONE:
+        return
+    try:
+        import ctypes
+        # COINIT_APARTMENTTHREADED = 0x2
+        ctypes.windll.ole32.CoInitializeEx(None, 0x2)
+    except Exception:
+        pass                    # not Windows, or no ole32 — nothing to do
+    with _COM_LOCK:
+        _COM_STA_DONE.add(ident)
+
 
 class MicrophoneError(Exception):
     pass
@@ -297,6 +328,10 @@ class Recorder:
         except Exception as e:
             raise MicrophoneError(f"Audio library unavailable: {e}") from e
 
+        # The opening thread must be a COM STA or WASAPI/WDM-KS refuses with
+        # 0x492 (the Phase-0 split regression). Legacy got this free from the
+        # GUI thread; here we make it explicit on whatever thread opens.
+        ensure_com_sta()
         device_arg, device_info, warning = resolve_microphone_device(self.config)
         capture_rate = choose_capture_sample_rate(
             sd, self.config, device_arg, device_info)
@@ -396,6 +431,10 @@ class Recorder:
         self._recording = False
         self._on_auto_stop = None
         if self._stream is not None:
+            # Closing a WASAPI/WDM-KS stream is COM too; stop() runs on a
+            # different worker thread (_finish_recording) than start() did, so
+            # it needs its own STA (cross-STA-thread close is fine — probe 4).
+            ensure_com_sta()
             try:
                 self._stream.stop()
                 self._stream.close()

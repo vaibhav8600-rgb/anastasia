@@ -41,6 +41,22 @@ def run_doctor() -> int:
     from app.voice.recorder import microphone_available
     ok &= _line(microphone_available(), "Mic available", warn=True)
 
+    # Resolved mic device + host API — the one-command answer to "which endpoint
+    # is Anna actually opening, and on what host API?" (WASAPI/MME/WDM-KS). This
+    # is what diagnosed the Phase-0 split mic regression; keep it visible.
+    try:
+        from app.voice.recorder import resolve_microphone_device
+        device_arg, info, warn = resolve_microphone_device(config)
+        if info:
+            _line(True, f"Mic device: [{info.get('index')}] "
+                        f"{info.get('name')} · host API: {info.get('hostapi') or '?'}"
+                        + (f"  ⚠ {warn}" if warn else ""), warn=bool(warn))
+        else:
+            _line(True, "Mic device: system default "
+                        f"(device_arg={device_arg})", warn=True)
+    except Exception as e:
+        _line(False, f"Mic device resolution failed: {e}", warn=True)
+
     from app.voice.stt_whisper import backend_ready
     stt_ok, msg = backend_ready(config)
     ok &= _line(stt_ok, msg, warn=True)
