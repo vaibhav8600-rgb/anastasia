@@ -34,7 +34,17 @@ from app.core.server import DEFAULT_PORT
 class NativeApi:
     """The minimal `pywebview.api` surface — window-local operations only.
     Its method names are the ARG_SPEC entries flagged `native: true`; anything
-    not here does not exist to the page except over the socket."""
+    not here does not exist to the page except over the socket.
+
+    CRITICAL: every non-method attribute here is PRIVATE (`_`-prefixed).
+    pywebview's API-exposure walker (`inject_pywebview` → `get_functions`)
+    recurses into any *public, non-callable* attribute of the js_api object
+    hunting for nested functions. A public `window` reference therefore sends
+    it walking `window.native.CoreWebView2 / ZoomFactor / AccessibilityObject.
+    Empty.Empty…` — off the UI thread — which is the E_NOINTERFACE flood and
+    the recursion crash. Underscore-prefixing keeps the walker out (it skips
+    `_`-names), which is exactly why the legacy `JsApi._bridge` never tripped
+    this. `test_native_api_never_exposes_the_window_to_pywebview` pins it."""
 
     _FILE_TYPES = {
         "piper_exe": ("Piper executable (*.exe)",),
@@ -45,7 +55,7 @@ class NativeApi:
 
     def __init__(self, port: int):
         self._port = int(port)
-        self.window = None            # set after create_window
+        self._window = None           # PRIVATE — never public (see class docstring)
 
     def get_ws_config(self) -> dict:
         return {"url": f"ws://127.0.0.1:{self._port}",
@@ -59,11 +69,13 @@ class NativeApi:
 
     def pick_voice_file(self, kind) -> str:
         kind = str(kind or "")
-        if kind not in self._FILE_TYPES or self.window is None:
+        if kind not in self._FILE_TYPES or self._window is None:
             return ""
         try:
             import webview
-            picked = self.window.create_file_dialog(
+            # `create_file_dialog` is pywebview's own API (it owns its native
+            # threading); we never touch `_window.native` ourselves.
+            picked = self._window.create_file_dialog(
                 webview.OPEN_DIALOG, allow_multiple=False,
                 file_types=self._FILE_TYPES[kind])
             return str(picked[0]) if picked else ""
@@ -88,6 +100,8 @@ def run_ui(argv=None) -> int:
     import webview
     from pathlib import Path
 
+    from app import ui_thread
+
     port = _parse_port(argv)
     api = NativeApi(port)
     index = Path(__file__).resolve().parent / "web" / "index.html"
@@ -95,14 +109,19 @@ def run_ui(argv=None) -> int:
         "Anastasia (Anna)", url=str(index), js_api=api,
         width=1280, height=820, min_size=(900, 650),
         background_color="#05060f")
-    api.window = window
+    api._window = window          # PRIVATE attr — pywebview must not walk it
     print(f"anna-ui: window up; connecting to ws://127.0.0.1:{port}")
+    # This thread runs the GUI message loop; register it so assert_ui_thread()
+    # can catch any future native access that strays off it.
+    ui_thread.set_ui_thread()
     try:
         webview.start(gui="edgechromium", debug=("--debug" in (argv or [])))
     except Exception as e:
         from app.main import _webview2_error_box
         _webview2_error_box(str(e))
         return 1
+    finally:
+        ui_thread.clear_ui_thread()
     return 0
 
 
