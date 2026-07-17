@@ -20,6 +20,7 @@ Two consequences, both deliberate:
 import asyncio
 import sys
 
+from app.agent.devlog import devlog
 from app.core.approvals import ApprovalRouter
 from app.core.auth import load_or_create_token
 from app.core.eventlog import EventLog
@@ -61,6 +62,17 @@ def _parse_port(argv) -> int:
     return DEFAULT_PORT
 
 
+def _open_ui(server, port: int) -> None:
+    """Tray 'Open Anna'. Launch the window client — unless one is already
+    attached (a UI client is connected), in which case do nothing rather than
+    stack a second window."""
+    if any(getattr(c, "ready", False) for c in list(server._clients)):
+        devlog.log("[tray] Open Anna: a window is already connected.")
+        return
+    import subprocess
+    subprocess.Popen([sys.executable, "-m", "app.anna_ui", "--port", str(port)])
+
+
 async def _main(port: int) -> int:
     # Bind before creating ANYTHING — a second instance must exit on
     # PortInUseError without having touched the token file, the event log,
@@ -72,15 +84,27 @@ async def _main(port: int) -> int:
     eventlog = EventLog()
     server.eventlog = eventlog
     controller = wire_controller(server)
+
+    # Core-owned tray (D-0.2). Quit only SIGNALS the loop to stop; the single
+    # teardown path is the `finally` below, so there is exactly one ordered
+    # shutdown whether Quit, Ctrl-C or a client-driven stop triggers it.
+    loop = asyncio.get_running_loop()
+    from app.core.tray import Tray
+    tray = Tray(
+        eventlog=eventlog,
+        on_open=lambda: _open_ui(server, server.port),
+        on_pause_toggle=lambda paused: loop.call_soon_threadsafe(
+            controller.set_listening_paused, paused),
+        on_quit=server.stop)         # signal only — finally does the teardown
+    tray.start()                     # returns False (core runs on) if unavailable
+
     print(f"anna-core: listening on ws://127.0.0.1:{server.port}")
     try:
         await server.serve_forever()
     finally:
-        try:
-            controller.shutdown()         # Live session, mic, camera, drivers
-        except Exception:
-            pass
-        eventlog.close()
+        from app.core.lifecycle import graceful_teardown
+        graceful_teardown(controller, eventlog, server=server, tray=tray,
+                          reason="shutdown")
     return 0
 
 

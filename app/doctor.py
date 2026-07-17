@@ -121,6 +121,16 @@ def run_doctor() -> int:
                          f"python app/main.py --dump-events", warn=True)
         else:
             _line(True, "No failed IPC auth attempts (24h)")
+        # Tray is a convenience, not a heartbeat: if it died, core kept running,
+        # but the fact should be visible here rather than lost (Phase 0, R4).
+        tray = log.error_summary("tray", hours=24.0)
+        if tray["count"]:
+            _line(False, f"Tray reported {tray['count']} failure(s) in the last "
+                         f"24h (latest {tray['last']}) — core is unaffected; the "
+                         f"tray icon may be gone. Inspect: "
+                         f"python app/main.py --dump-events", warn=True)
+        else:
+            _line(True, "Tray healthy (no failures logged, 24h)")
     else:
         _line(True, "Event log not started yet")
 

@@ -689,3 +689,16 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .confirm-card .confirm-unsent {
   margin-top: 8px; font-size: 12px; color: var(--warn); font-weight: 600;
 }
+
+/* Phase 0, commit 6 — tray "Pause listening" badge. */
+#paused-badge {
+  position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+  z-index: 190; padding: 5px 14px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; letter-spacing: .2px; color: #fde68a;
+  background: rgba(120, 53, 15, .92); border: 1px solid rgba(251, 191, 36, .5);
+  box-shadow: 0 2px 10px rgba(0,0,0,.35);
+}
+#paused-badge.hidden { display: none; }
+/* While paused, dim the mic affordance so the window never looks like it's
+   listening when core is deaf. */
+body.listening-paused #mic-btn { opacity: .5; filter: grayscale(.6); }

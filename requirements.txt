@@ -23,6 +23,10 @@ pyperclip>=1.8
 Pillow>=10.0               # screenshots
 keyboard>=0.13.5           # global push-to-talk hotkey
 
+# Phase 0 split (anna-core daemon)
+websockets>=16.0           # core <-> UI IPC (D-0.1)
+pystray>=0.19.5            # core-owned tray icon (D-0.2); optional — core runs without it
+
 # Dev / tests
 pytest>=8.0
 

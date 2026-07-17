@@ -637,6 +637,14 @@ function setConnState(state, reason) {
   }
 }
 
+/* Tray "Pause listening": show an unmistakable badge and mark the body, so the
+   window never looks like it's listening when core is deaf. */
+function setListeningPaused(paused) {
+  document.body.classList.toggle("listening-paused", paused);
+  const badge = $("#paused-badge");
+  if (badge) badge.classList.toggle("hidden", !paused);
+}
+
 /* An approval that could not be delivered (socket down) must fail visibly —
    never grey the card as if it were resolved. The card stays live; a reconnect
    re-hydrates it by id from full_state and it can be approved again. */
@@ -1080,6 +1088,10 @@ const handlers = {
   // and let the full_state that follows a reconnect rebuild everything.
   connection: (p) => setConnState((p && p.state) || "open", (p && p.reason) || ""),
 
+  // Phase 0, commit 6: tray "Pause listening" — a visible, honest badge that
+  // Anna is deaf to the wake word right now.
+  listening_paused: (p) => setListeningPaused(!!(p && p.paused)),
+
   toggle_sync: (p) => {
     const map = { wake_word: "#toggle-wake", voice: "#toggle-voice",
                   hands_free: "#toggle-hands-free" };
@@ -1286,6 +1298,7 @@ const handlers = {
     }
     messagesEl().innerHTML = "";
     (p.conversation || []).forEach(m => renderEntry(m, m.role));
+    setListeningPaused(!!p.listening_paused);
     lastConfirm = p.pending || null;
     if (p.pending) appendMessage(confirmCardHtml(p.pending), "anna");
     $("#dev-log").innerHTML = "";

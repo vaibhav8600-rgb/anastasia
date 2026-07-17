@@ -113,6 +113,8 @@ class Controller:
         self._last_turn_stt_ms = 0.0
         self._last_turn_stt_provider = "local"   # real STT path for telemetry
         self._streaming_warned = False           # warn once per session (9.1B)
+        self._listening_paused = False           # tray "Pause listening" (Phase 0)
+        self._wake_was_on = False                # restore wake state on resume
 
         if ui is None:
             raise ValueError("Controller requires a ui (UIBridge or test fake).")
@@ -1134,8 +1136,40 @@ class Controller:
                                "Developer Tools. I turned the toggle off for now.")
 
     def _on_wake(self) -> None:
+        # Provably deaf while paused: even if a wake stream is mid-teardown and
+        # fires once more, it does NOTHING here — no mic, no turn, no row.
+        if self._listening_paused:
+            return
         if not self.pipeline.is_processing_command and not self.recorder.recording:
             self._ui(self.toggle_mic, "wake_word")
+
+    def set_listening_paused(self, paused: bool) -> None:
+        """Tray 'Pause listening'. Makes Anna deaf to the wake word: the wake
+        listener is STOPPED (its mic released), and `_on_wake` is gated as a
+        belt-and-suspenders. Resume restarts the wake listener iff it had been
+        on. Push-to-talk from the window is a deliberate user act and is left
+        alone — pausing is about ambient listening, not the button."""
+        paused = bool(paused)
+        if paused == self._listening_paused:
+            self._emit_paused_indicator(paused)   # idempotent echo (re-hydrate)
+            return
+        self._listening_paused = paused
+        if paused:
+            self._wake_was_on = self.wake_listener is not None
+            if self.wake_listener is not None:
+                self.wake_listener.stop()
+                self.wake_listener = None
+                self._sync_toggle("wake_word", False)
+            devlog.log("Listening paused (tray) — wake word off, mic released.")
+        else:
+            if self._wake_was_on and self.wake_listener is None:
+                self.toggle_wake_word_on()        # restarts + re-syncs the switch
+            devlog.log("Listening resumed (tray).")
+        self._emit_paused_indicator(paused)
+
+    def _emit_paused_indicator(self, paused: bool) -> None:
+        if hasattr(self.ui, "dispatch"):
+            self.ui.dispatch("listening_paused", {"paused": bool(paused)})
 
     # ------------------------------------------------------- misc UI actions
     def set_toggle(self, name: str, value: bool) -> None:
@@ -1183,6 +1217,7 @@ class Controller:
             "hotkey": self.config.push_to_talk_hotkey,
             "assistant": self.config.assistant_nickname,
             "prefs": {"animation_quality": self.config.animation_quality},
+            "listening_paused": self._listening_paused,
         })
 
     def _allowed_path(self, path: str):
