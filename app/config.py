@@ -200,6 +200,21 @@ class AppConfig(BaseModel):
     # accept spoken approval regardless of this setting.
     confirmation_voice_listen: bool = False
 
+    # Phase 0 / D-0.5: with NO window attached (headless anna-core), let the
+    # user ANSWER a confirmation by voice — spoken question first, an audible
+    # cue when the mic opens, one short listen window. The strong phrase is
+    # unchanged, and this only ever triggers for a card the validator demanded
+    # and only when nobody can click. Default ON (it is the ONLY answer channel
+    # windowless); a kill switch for users who want windowless to stay mute.
+    headless_voice_confirm: bool = True
+    headless_confirm_listen_s: float = 6.0
+
+    # Phase 0 / D-0.3: start anna-core at logon via a Task Scheduler ONLOGON
+    # task. OPT-IN — mirrors the actual scheduled task, only ever changed by an
+    # explicit user action (installer checkbox or the Settings toggle). Nothing
+    # on boot creates the task; editing machine startup needs consent.
+    autostart_enabled: bool = False
+
     # UI
     animation_quality: str = "medium"    # "low" | "medium" | "high"
 

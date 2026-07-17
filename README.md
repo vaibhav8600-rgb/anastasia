@@ -100,6 +100,20 @@ use any AI model; hybrid sends only transcribed/typed text + recent chat turns;
 local unless you enable the clipboard opt-in. If the cloud fails 3× in a row a
 circuit breaker routes everything local for 120s (no dead air), then probes.
 
+**Answering by voice when there's no window open (D-0.5).** When Anna runs
+headless (the `anna-core` background service with no window attached) and she
+needs your approval for something, the only way to answer is by voice — so, and
+*only* then, she opens the microphone to hear "Anna approve" or "cancel". This
+is deliberate and tightly fenced: it happens **only when no window is
+connected**, **only for a card the safety validator itself demanded**, she
+**speaks the question first** and the mic stays shut until she's done, an
+**audible cue** marks the moment the mic opens (a windowless mic is never
+silent), and it's **one short listen window** — one answer, then closed. The
+strong phrase is unchanged: destructive actions still require "Anna approve", a
+casual "yes" is still refused. Attach a window and clicking takes over again.
+Turn it off entirely with `headless_voice_confirm: false` in config (then a
+windowless Anna simply can't be told "yes" and the card expires).
+
 ### 5. Streaming speech + hands-free conversation (optional)
 
 Local Whisper batches your audio and can take several seconds. **Streaming

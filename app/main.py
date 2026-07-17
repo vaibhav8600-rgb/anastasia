@@ -193,6 +193,84 @@ class Controller:
         self._ui(self.ui.confirm_panel.show, action_id, transcript, plan, safety,
                  self.approve_pending, self.cancel_pending, self.voice_confirm,
                  kind, message)
+        # D-0.5: windowless, the card can't be clicked — offer a VOICE answer.
+        # Only when no UI is attached; the strong phrase is unchanged.
+        if not self._ui_attached():
+            self._headless_voice_confirm(action_id)
+
+    def _ui_attached(self) -> bool:
+        probe = getattr(self.ui, "has_attached_ui", None)
+        return probe() if callable(probe) else True   # a window/fake IS a UI
+
+    def _headless_voice_confirm(self, action_id: int) -> None:
+        """D-0.5: with NO window to click, let the user ANSWER a confirmation by
+        voice — and ONLY then. It is a new INPUT channel to the SAME validated
+        path, never a softer one: the single answer is routed through
+        `handle_confirmation_utterance`, so a destructive-tier card still demands
+        "Anna approve" and a casual "yes" is still refused. Safe by
+        construction — it cannot be reached without a pending card the validator
+        demanded, opens the mic only after Anna has spoken the question, marks
+        the open with an audible cue, and closes after one short window."""
+        if not getattr(self.config, "headless_voice_confirm", True):
+            return
+        if self._ui_attached():
+            return
+        threading.Thread(target=self._run_headless_confirm, args=(action_id,),
+                         daemon=True, name="anna-headless-confirm").start()
+
+    def _run_headless_confirm(self, action_id: int) -> None:
+        """The synchronous sequence (split out so the Safety Ritual can drive it
+        without a live mic): ask aloud → cue → one short listen → one answer."""
+        confirm = self.pipeline.confirm
+        pending = confirm.pending
+        if pending is None or pending.id != action_id:
+            return
+        # 1) Ask the question ALOUD first. The mic stays shut until she is done
+        #    speaking (half-duplex guarantees she can't hear herself).
+        self.speech.speak_async(confirm.summary())
+        self._wait_until_quiet()
+        if not confirm.has_pending() or confirm.pending.id != action_id:
+            return                     # answered / expired / replaced meanwhile
+        # 2) An AUDIBLE CUE marks the mic opening — a windowless open is never
+        #    silent (the equivalent of the on-screen mic ring).
+        self._play_mic_cue()
+        # 3) ONE short listen window.
+        text = self._hear_confirmation_answer()
+        if not text:
+            return                     # heard nothing; the card expires as usual
+        # 4) One answer, through the SAME validated path (strong phrase enforced).
+        devlog.log(f"Headless voice confirm heard: {text!r}")
+        self.pipeline.handle_confirmation_utterance(text)
+
+    def _wait_until_quiet(self, timeout: float = 15.0) -> None:
+        import time as _t
+
+        from app.voice import audio_gate
+        deadline = _t.time() + timeout
+        while self.speech.speaking and _t.time() < deadline:
+            _t.sleep(0.05)
+        _t.sleep(audio_gate.TAIL_SECONDS + 0.1)   # let the echo tail clear
+
+    def _play_mic_cue(self) -> None:
+        """A short, unmistakable chirp when the mic opens headless."""
+        try:
+            import winsound
+            winsound.Beep(880, 150)
+        except Exception:
+            pass
+
+    def _hear_confirmation_answer(self) -> str:
+        """Record the one short listen window and transcribe a single answer.
+        Split out as the injectable seam for the ritual test."""
+        window = float(getattr(self.config, "headless_confirm_listen_s", 6.0))
+        self.set_state("listening", "Say “Anna approve” or “cancel”…")
+        try:
+            self.recorder.start()
+            threading.Event().wait(window)
+            return self._transcribe_recording().text
+        except Exception as e:
+            devlog.exception(e, context="headless voice confirm")
+            return ""
 
     def hide_confirmation(self) -> None:
         self._ui(self.ui.confirm_panel.hide)
@@ -1194,8 +1272,44 @@ class Controller:
             else:
                 self.stop_hands_free("you turned it off", signoff=False)
             self._sync_toggle("hands_free", self._hands_free_active)
+        elif name == "autostart":
+            self.set_autostart(bool(value))
         else:
             devlog.warn(f"Unknown toggle from frontend: {name!r}")
+
+    def _autostart_state(self) -> bool:
+        """The REAL Task Scheduler state (falls back to the config mirror if the
+        query fails), so the Settings switch always shows the truth."""
+        try:
+            from app.core import autostart
+            return autostart.is_enabled()
+        except Exception:
+            return bool(getattr(self.config, "autostart_enabled", False))
+
+    def set_autostart(self, enabled: bool) -> None:
+        """Settings toggle for the logon auto-start task (D-0.3). An explicit,
+        consented change to machine startup: ON registers the Task Scheduler
+        task, OFF cleanly REMOVES it. The switch is then re-synced from the
+        REAL task state, so it can never claim a state the scheduler doesn't
+        have — and nothing else ever re-adds the task."""
+        from app.core import autostart
+        try:
+            ok = autostart.enable() if enabled else autostart.disable()
+            if not ok:
+                self.show_info("I couldn't change Windows startup — you may "
+                               "need to do it manually in Task Scheduler.")
+        except Exception as e:
+            devlog.exception(e, context="set_autostart")
+        actual = False
+        try:
+            actual = autostart.is_enabled()
+        except Exception:
+            pass
+        self.config.autostart_enabled = actual
+        self.config.save()
+        self._sync_toggle("autostart", actual)
+        devlog.log(f"Auto-start {'enabled' if actual else 'disabled'} "
+                   "(Task Scheduler ONLOGON).")
 
     def _sync_toggle(self, name: str, value: bool) -> None:
         if hasattr(self.ui, "dispatch"):
@@ -1210,7 +1324,9 @@ class Controller:
             "chips": self.chips,
             "toggles": {"wake_word": self.wake_listener is not None,
                         "voice": self.config.voice_enabled,
-                        "hands_free": self._hands_free_active},
+                        "hands_free": self._hands_free_active,
+                        "autostart": bool(getattr(self.config,
+                                                  "autostart_enabled", False))},
             "conversation": self.conversation.snapshot(),
             "devlog": devlog.entries(150),
             "pending": self.pipeline.pending_payload(),
@@ -1355,6 +1471,8 @@ class Controller:
                 "cloud_timeout_s": c.cloud_timeout_s,
                 "allow_clipboard_to_cloud": c.allow_clipboard_to_cloud,
                 "hands_free_followup": c.hands_free_followup,
+                # Real scheduler state, not the mirror — the switch never lies.
+                "autostart": self._autostart_state(),
                 "groq_key_masked": self._masked_groq_key(),
                 "groq_key_set": self.agent.brain.groq.configured()
                                 if hasattr(self.agent, "brain") else False,
@@ -1745,6 +1863,16 @@ def main() -> None:
     if "--ui" in sys.argv:
         from app.anna_ui import run_ui
         sys.exit(run_ui(sys.argv))
+
+    # Phase 0 / D-0.3: opt-in logon auto-start, driven by the installer
+    # checkbox and its uninstaller. Explicit consent only — never on boot.
+    if "--enable-autostart" in sys.argv or "--disable-autostart" in sys.argv:
+        from app.core import autostart
+        on = "--enable-autostart" in sys.argv
+        ok = autostart.enable() if on else autostart.disable()
+        print(f"anna-core auto-start {'enabled' if on else 'disabled'}: "
+              f"{'ok' if ok else 'FAILED'}")
+        sys.exit(0 if ok else 1)
 
     import webview
 

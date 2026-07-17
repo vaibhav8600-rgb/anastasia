@@ -62,6 +62,11 @@ class UIBridge:
         for event in buffered:
             self._eval(event)
 
+    def has_attached_ui(self) -> bool:
+        """The in-process window IS the UI — always attached (D-0.5). The
+        headless voice-confirm path therefore never triggers in legacy mode."""
+        return True
+
     def _on_devlog(self, entry: dict) -> None:
         self.dispatch("devlog", entry)
         if entry.get("category") == "timing":

@@ -107,6 +107,12 @@ class WsFanout(UIBridge):
     def destroy(self) -> None:         # no window to destroy
         pass
 
+    def has_attached_ui(self) -> bool:
+        """D-0.5: is a window actually connected right now? Drives whether a
+        confirmation may be answered by voice (only when nobody can click)."""
+        return any(getattr(c, "ready", False)
+                   for c in list(self._server._clients))
+
 
 class AuthThrottle:
     """Sliding-window rate limit on failed handshakes. Thread-safe; clock is

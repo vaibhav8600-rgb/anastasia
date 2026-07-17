@@ -713,6 +713,13 @@ function settingsHtml(s) {
         Hands-free follow-up: after Anna answers by voice, reopen the mic for
         ~6s so you can reply without pressing the hotkey.</label>
     </div>
+    <div class="form-row" style="flex-direction:row;align-items:center;gap:10px">
+      <input type="checkbox" id="set-autostart"
+             ${s.autostart ? "checked" : ""} style="width:auto">
+      <label for="set-autostart" style="margin:0">
+        Start Anna automatically when I log in (adds a Windows scheduled task;
+        unticking removes it).</label>
+    </div>
 
     <h4 class="settings-section">Conversation engine</h4>
     <div class="form-row"><label>Engine for voice conversations</label>
@@ -1243,6 +1250,11 @@ const handlers = {
       call("privacy_mode");
       closeModal();
     });
+    // Auto-start (D-0.3): changing machine startup is its own consented act —
+    // apply it immediately via set_toggle (schtasks add/remove), not save.
+    const autostartBox = $("#set-autostart");
+    if (autostartBox) autostartBox.addEventListener("change", (e) =>
+      call("set_toggle", "autostart", e.target.checked));
     // Test buttons save the current form first so tests use what you typed.
     $("#test-model").addEventListener("click", () => {
       call("save_settings", collectSettings()).then(() => call("test_model"));

@@ -32,9 +32,19 @@ Name: "{autodesktop}\Anastasia"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: 
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: checkedonce
+; D-0.3 auto-start: OPT-IN, default OFF (the `unchecked` flag, never `checkedonce`).
+; Editing machine startup needs the user's explicit consent (Protocol §4).
+Name: "autostart"; Description: "Start Anna automatically when I log in"; GroupDescription: "Startup:"; Flags: unchecked
 
 [Run]
+; Register the ONLOGON Task Scheduler entry only if the user ticked the box.
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--enable-autostart"; Flags: runhidden skipifsilent; Tasks: autostart
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch Anastasia"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+; Always remove the scheduled task on uninstall — leave no machine-startup
+; edit behind. `runhidden`, and don't block uninstall if it's already gone.
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--disable-autostart"; Flags: runhidden; RunOnceId: "RemoveAnnaAutostart"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
