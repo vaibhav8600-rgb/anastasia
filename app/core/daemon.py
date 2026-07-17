@@ -62,18 +62,31 @@ def _parse_port(argv) -> int:
     return DEFAULT_PORT
 
 
+def ui_launch_command(port: int) -> list:
+    """The command that launches the window client (anna-ui).
+
+    A FROZEN build has no `-m`, so route through the packaged exe's own `--ui`
+    hook; in dev route through `main.py --ui` with an absolute path so the cwd
+    doesn't matter. Both land in the same place — `app.anna_ui.run_ui`."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--ui", "--port", str(port)]
+    from pathlib import Path
+    main_py = Path(__file__).resolve().parents[2] / "app" / "main.py"
+    return [sys.executable, str(main_py), "--ui", "--port", str(port)]
+
+
 def _open_ui(server, port: int) -> None:
-    """Tray 'Open Anna'. Launch the window client — unless one is already
-    attached (a UI client is connected), in which case do nothing rather than
-    stack a second window."""
+    """Launch the window client — unless one is already attached (a UI client
+    is connected), in which case do nothing rather than stack a second window.
+    Used both by the tray 'Open Anna' and by the default launch's auto-open."""
     if any(getattr(c, "ready", False) for c in list(server._clients)):
-        devlog.log("[tray] Open Anna: a window is already connected.")
+        devlog.log("Open Anna: a window is already connected.")
         return
     import subprocess
-    subprocess.Popen([sys.executable, "-m", "app.anna_ui", "--port", str(port)])
+    subprocess.Popen(ui_launch_command(port))
 
 
-async def _main(port: int) -> int:
+async def _main(port: int, open_ui: bool = False) -> int:
     # Bind before creating ANYTHING — a second instance must exit on
     # PortInUseError without having touched the token file, the event log,
     # the microphone or the hotkeys. The empty token rejects any connection
@@ -99,6 +112,8 @@ async def _main(port: int) -> int:
     tray.start()                     # returns False (core runs on) if unavailable
 
     print(f"anna-core: listening on ws://127.0.0.1:{server.port}")
+    if open_ui:                      # default launch: bring the window up once
+        _open_ui(server, server.port)
     try:
         await server.serve_forever()
     finally:
@@ -108,13 +123,13 @@ async def _main(port: int) -> int:
     return 0
 
 
-def run_daemon(argv=None) -> int:
+def run_daemon(argv=None, *, open_ui: bool = False) -> int:
     try:
         port = _parse_port(argv)
     except SystemExit as e:
         return int(e.code or 2)
     try:
-        return asyncio.run(_main(port))
+        return asyncio.run(_main(port, open_ui=open_ui))
     except PortInUseError as e:
         print(str(e))                     # loud, specific, non-zero — no re-port
         return 2

@@ -26,10 +26,12 @@ original session; its binding rules are reproduced in §10 below.
 ## 2. Run / test / debug
 
 ```powershell
-.venv\Scripts\python.exe app\main.py             # run the app
+.venv\Scripts\python.exe app\main.py             # DEFAULT: Phase-0 split (core+tray+window)
+.venv\Scripts\python.exe app\main.py --core      # headless daemon only
+.venv\Scripts\python.exe app\main.py --ui        # window only (needs a running --core)
+.venv\Scripts\python.exe app\main.py --legacy    # pre-split single-process app (escape hatch)
 .venv\Scripts\python.exe app\main.py --doctor    # health check
-.venv\Scripts\python.exe app\main.py --debug     # WebView2 devtools console
-.venv\Scripts\python.exe -m pytest tests/ -q     # 456 tests, ~50s
+.venv\Scripts\python.exe -m pytest tests/ -q     # 586 tests, ~70s
 ```
 
 Git: local repo only (no remote). One commit per unit of work,

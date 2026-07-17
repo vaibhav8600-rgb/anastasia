@@ -49,13 +49,22 @@ if os.environ.get("ANNA_INCLUDE_LOCAL_VOICE_DATA") == "1":
 hiddenimports = [
     "webview.platforms.edgechromium",
     "websocket",
+    # Phase 0 split (anna-core): the asyncio server + the sync client are both
+    # imported lazily, and pystray loads its Win32 backend dynamically — none of
+    # which PyInstaller's static analysis reliably finds. Bundle them explicitly
+    # or the frozen `--core`/tray fails to import.
+    "websockets",
+    "websockets.asyncio.server",
+    "websockets.sync.client",
+    "pystray",
+    "pystray._win32",
     "sounddevice",
     "numpy",
     "faster_whisper",
     "piper",
     "piper.config",
 ]
-for package in ("webview", "piper"):
+for package in ("webview", "piper", "websockets", "pystray", "app.core"):
     try:
         hiddenimports.extend(collect_submodules(package))
     except Exception:

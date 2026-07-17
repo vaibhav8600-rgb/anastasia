@@ -40,10 +40,39 @@ if ($PullOllamaModel) {
     }
 }
 
-$launcherText = @"
-Set-Location `"$Root`"
-& `"$Python`" app\main.py
-"@
+# Generate Run-Anna.ps1. Default is the original single-process app (unchanged,
+# safe). The Phase-0 split is opt-in via switches so you can drive the manual
+# passes: -Split (anna-core in its own window + the anna-ui window), -Core
+# (headless daemon only — for the D-0.5 windowless voice-confirm test), -Ui
+# (window client only, against an already-running --core).
+$launcherText = @'
+[CmdletBinding()]
+param(
+    [switch]$Split,   # anna-core (background window) + anna-ui window
+    [switch]$Core,    # headless daemon only (no window)
+    [switch]$Ui,      # window client only (needs a running --core)
+    [int]$Port = 8765
+)
+$Root = "__ROOT__"
+$Python = "__PYTHON__"
+Set-Location $Root
+
+if ($Core) { & $Python app\main.py --core --port "$Port"; return }
+if ($Ui)   { & $Python app\main.py --ui   --port "$Port"; return }
+if ($Split) {
+    Write-Host "[Anna] starting anna-core on port $Port ..." -ForegroundColor Cyan
+    Start-Process -FilePath $Python `
+        -ArgumentList 'app\main.py','--core','--port',"$Port" `
+        -WorkingDirectory $Root
+    Start-Sleep -Seconds 3          # let core bind the port before the UI dials in
+    Write-Host "[Anna] opening the window (close the core window, or use the tray Quit, to stop)" -ForegroundColor Cyan
+    & $Python app\main.py --ui --port "$Port"
+    return
+}
+# Default: the original single-process app.
+& $Python app\main.py
+'@
+$launcherText = $launcherText.Replace("__ROOT__", $Root).Replace("__PYTHON__", $Python)
 Set-Content -LiteralPath $Launcher -Value $launcherText -Encoding UTF8
 
 if (-not $NoDesktopShortcut) {
@@ -62,4 +91,8 @@ if (-not $NoDesktopShortcut) {
 Info "Running health check"
 & $Python app\main.py --doctor
 
-Info "Done. Start Anna with: .\Run-Anna.ps1"
+Info "Done."
+Info "  Start Anna (single process):        .\Run-Anna.ps1"
+Info "  Phase-0 split (core + window):       .\Run-Anna.ps1 -Split"
+Info "  Headless daemon only (D-0.5 test):   .\Run-Anna.ps1 -Core"
+Info "  Window only (against a running core):.\Run-Anna.ps1 -Ui"

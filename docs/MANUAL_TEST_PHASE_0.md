@@ -6,8 +6,21 @@ Phase 0 adds **no features**, so *every* finding here is a regression finding �
 including "it felt slightly slower".
 
 **Half A** (event log · tool registry · protocol) — M0.5 and the Core Safety
-Ritual apply now. **Half B** (daemon · tray · supervision) — M0.1–M0.4 and M0.6
-become meaningful once the split lands; they are marked ⏳ until then.
+Ritual apply now. **Half B** (daemon · tray · supervision · UI-as-client ·
+auto-start · headless voice-confirm) has now **landed** — M0.1–M0.6 apply, and
+the Core Safety Ritual is the closeout for the half.
+
+## How to launch (commit 8: the split is the default)
+
+```powershell
+python app\main.py            # DEFAULT: core + tray + window (use this for M0.1)
+python app\main.py --core     # headless only — for M0.2 (windowless) and D-0.5
+python app\main.py --ui       # window against a running --core
+python app\main.py --legacy   # the pre-split app, to A/B against
+```
+
+Run the ritual below through the **default** launch (the split). If anything is
+worse than `--legacy`, that is the regression to report.
 
 ---
 

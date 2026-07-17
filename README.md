@@ -186,10 +186,20 @@ Google renames these; editable in Settings if it churns).
 
 ### 7. Run
 
+Anna runs as a **split**: `anna-core` (headless daemon + tray, owns mic/brain/
+safety) and `anna-ui` (thin window over a localhost WebSocket). The default
+starts both:
+
 ```powershell
-python app\main.py            # the app
-python app\main.py --doctor   # health check
+python app\main.py            # DEFAULT: core + tray, opens the window
+python app\main.py --core     # headless daemon only (tray "Open Anna" opens a window)
+python app\main.py --ui       # window only, against a running --core
+python app\main.py --legacy   # the pre-split single-process app (escape hatch)
+python app\main.py --doctor   # health check (mic device/host API, IPC/tray status)
 ```
+
+Closing the window leaves core in the tray; **Quit** from the tray shuts
+everything down cleanly (including any metered Gemini Live session).
 
 ## Using Anna
 

@@ -1874,6 +1874,24 @@ def main() -> None:
               f"{'ok' if ok else 'FAILED'}")
         sys.exit(0 if ok else 1)
 
+    # Phase 0 / commit 8: the ESCAPE HATCH. `--legacy` runs the original
+    # single-process app — window + Controller in one process, no daemon, no
+    # socket — exactly as Anna ran before the split. If the split ever
+    # misbehaves, this restores today's known-good behaviour with one flag.
+    if "--legacy" in sys.argv:
+        run_legacy()
+        return
+
+    # DEFAULT (commit 8): the split. This process becomes anna-core (daemon +
+    # tray) and brings up the window once. Closing the window leaves core in the
+    # tray; Quit from the tray tears everything down. `--core` runs headless
+    # (no auto-window), `--ui` is the window alone.
+    from app.core.daemon import run_daemon
+    sys.exit(run_daemon(sys.argv, open_ui=True))
+
+
+def run_legacy() -> None:
+    """The pre-split single-process app (the `--legacy` escape hatch)."""
     import webview
 
     from app.web.bridge import JsApi, UIBridge
