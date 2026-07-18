@@ -208,3 +208,28 @@ building on it.
 default to `qwen/qwen3.6-27b` or adjust parsing), or Groq's small/large lineup
 changes again. The Phase-1 cloud-triage model is a *separate* config key
 (default `openai/gpt-oss-20b`), decided in 1B.
+
+---
+
+## D-1.1 — System metrics: pure ctypes (not psutil)
+
+The Phase-1 plan proposed `psutil` for disk/RAM/battery. But psutil isn't
+installed (it's a NEW dependency), it ships a C extension that needs a
+PyInstaller hook, and the session-lock spike already proved direct Win32 ctypes
+calls work cleanly here. Only three simple metrics are needed.
+
+| Option | Deps | Windows | Verdict |
+|---|---|---|---|
+| **ctypes Win32** (`GetDiskFreeSpaceExW`, `GlobalMemoryStatusEx`, `GetSystemPowerStatus`) | **none** | native | **CHOSEN** — zero-dep, no packaging impact, matches the local-first identity and the ctypes precedent |
+| `psutil` | new (+C ext) | good, cross-platform | Rejected for 3 metrics — install weight + a packaging hook, for no gain here |
+| WMI (`wmi`/comtypes) | new, heavy | slow | Rejected |
+
+**Choice: pure ctypes.** ~30 lines total, verified on the target laptop (disk
+11%, RAM 66%, battery 100/plugged). **CPU temperature has no cheap documented
+Windows API** (WMI thermal zones are flaky/often unavailable), so temp is
+**absent by design** — the per-metric probe degrades it to absent-and-doctor-
+noted, never a recurring error (Phase-1 rider 1).
+
+**Revisit when:** a watcher needs a metric ctypes can't reach cheaply, or Anna
+ever targets Linux/macOS (then psutil's cross-platform value would justify the
+dependency).

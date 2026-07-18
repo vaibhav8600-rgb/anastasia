@@ -87,6 +87,10 @@ EVENT_FIELDS = {
     "circuit_state":     ("component", "state", "failures"),
     "capture":           ("kind", "scope", "used_cloud", "chars"),  # NEVER content
     "error":             ("component", "message"),
+    # Phase 1 watchers. Numbers + a short kind string only — never a file's
+    # contents, and (system) never a path. `simulated` tags --simulate-event
+    # injections so a soak's labeled dataset never mixes test and real.
+    "watch_system":      ("kind", "value", "detail", "simulated"),
     # Written by the log about ITSELF when it had to drop events. An audit
     # trail that loses rows silently is worse than useless — it lies.
     "log_gap":           ("dropped", "reason"),
@@ -542,3 +546,28 @@ class EventLog:
             except Exception:
                 pass
         return {"count": count, "last": last}
+
+    def error_components(self, prefix: str = "", hours: float = 24.0) -> dict:
+        """{component: count} for error rows whose component starts with
+        `prefix` in the window — lets --doctor list benched watchers
+        (component 'watch-<name>') without knowing their names ahead of time."""
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(hours=hours)).isoformat(
+            timespec="seconds")
+        try:
+            conn = sqlite3.connect(str(self.path))
+            rows = conn.execute(
+                "SELECT payload_json FROM events WHERE type='error' AND ts >= ?",
+                (cutoff,)).fetchall()
+            conn.close()
+        except Exception:
+            return {}
+        out = {}
+        for (payload_json,) in rows:
+            try:
+                comp = json.loads(payload_json).get("component", "")
+                if comp and comp.startswith(prefix):
+                    out[comp] = out.get(comp, 0) + 1
+            except Exception:
+                pass
+        return out

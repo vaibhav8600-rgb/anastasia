@@ -131,7 +131,30 @@ def run_doctor() -> int:
                          f"python app/main.py --dump-events", warn=True)
         else:
             _line(True, "Tray healthy (no failures logged, 24h)")
+        # Phase 1: any watcher benched by its breaker in the last 24h.
+        benched = log.error_components(prefix="watch-", hours=24.0)
+        if benched:
+            names = ", ".join(sorted(c.replace("watch-", "") for c in benched))
+            _line(False, f"Watchers benched (breaker): {names} — core healthy, "
+                         f"but they stopped watching. Inspect: "
+                         f"python app/main.py --dump-events", warn=True)
+        else:
+            _line(True, "No watchers benched (24h)")
     else:
         _line(True, "Event log not started yet")
+
+    # Phase 1 (rider 1): which system metrics are actually readable on THIS
+    # hardware. Absent sensors degrade quietly — they are not an error, just
+    # noted here so you know what the system watcher can and can't see.
+    try:
+        from app.watchers.system import probe_system_metrics
+        metrics = probe_system_metrics()
+        live = [m for m, ok in metrics.items() if ok]
+        absent = [m for m, ok in metrics.items() if not ok]
+        _line(True, f"System metrics live: {', '.join(live) or 'none'}"
+                    + (f"  ·  absent (skipped): {', '.join(absent)}" if absent else ""),
+              warn=bool(absent))
+    except Exception as e:
+        _line(True, f"System metrics probe unavailable: {e}", warn=True)
 
     return 0 if ok else 1

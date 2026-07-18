@@ -1876,6 +1876,20 @@ def main() -> None:
         from app.core.inspect_events import run_cli
         sys.exit(run_cli(sys.argv))
 
+    # Phase 1: fire one watcher event through the real pipeline for testing,
+    # tagged `simulated` so a soak's labeled dataset stays clean.
+    #   --simulate-event battery_low   (see --simulate-event ? for the list)
+    if "--simulate-event" in sys.argv:
+        from app.watchers import simulate_event, simulatable_kinds
+        i = sys.argv.index("--simulate-event")
+        kind = sys.argv[i + 1] if i + 1 < len(sys.argv) else ""
+        if kind in ("", "?", "list"):
+            print("simulatable events:", ", ".join(simulatable_kinds()))
+            sys.exit(0)
+        ok = simulate_event(kind)
+        print(f"simulated {kind!r}: {'emitted (see --dump-events)' if ok else 'unknown kind'}")
+        sys.exit(0 if ok else 2)
+
     # Phase 0: headless daemon — the core without a window (commit 4).
     if "--core" in sys.argv:
         from app.core.daemon import run_daemon

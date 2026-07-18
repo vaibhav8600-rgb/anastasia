@@ -221,6 +221,16 @@ class AppConfig(BaseModel):
     # on boot creates the task; editing machine startup needs consent.
     autostart_enabled: bool = False
 
+    # Phase 1: the proactive loop (watchers → salience → feed). OFF by default —
+    # proactivity is opt-in per the consent doctrine. Every watcher is gated by
+    # its own watch_<name>_enabled, but nothing runs unless this master is on.
+    proactive_enabled: bool = False
+    watch_system_enabled: bool = True
+    watch_system_interval_s: float = 30.0
+    watch_disk_min_pct: float = 10.0        # alert below; re-arms at +2 (hysteresis)
+    watch_ram_max_pct: float = 90.0         # alert above; re-arms at -3
+    watch_battery_min_pct: float = 20.0     # alert below (on battery); re-arms +5
+
     # UI
     animation_quality: str = "medium"    # "low" | "medium" | "high"
 
