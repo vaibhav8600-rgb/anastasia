@@ -185,6 +185,15 @@ class Controller:
         # first, so the final "ready" after a session ends passes through.
         if state == "ready" and self._live is not None:
             state, detail = "listening", "Live — just talk"
+        # Display priority: speaking > listening > ready. While audio is
+        # actually playing, never let a racing "ready"/"listening" downgrade the
+        # status — a streaming reply lets the pipeline finish (→ ready) and, in
+        # hands-free, reopens the mic (→ listening) BEFORE TTS drains its queue,
+        # so the status would otherwise lie ("Listening" while she speaks). When
+        # speech truly ends, _on_speaking_changed(False) fires with the gate
+        # already cleared, so the real resting state passes through then.
+        if state in ("ready", "listening") and self.speech.speaking:
+            return
         self.last_state = state
         self._ui(self.ui.set_state, state, detail)
 
