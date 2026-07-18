@@ -233,3 +233,36 @@ noted, never a recurring error (Phase-1 rider 1).
 **Revisit when:** a watcher needs a metric ctypes can't reach cheaply, or Anna
 ever targets Linux/macOS (then psutil's cross-platform value would justify the
 dependency).
+
+---
+
+## D-1.2 — Filesystem watching: `watchdog` (accepted, conditionally)
+
+Pre-approved conditionally: accept `watchdog` only if it is healthily maintained
+on Windows AND bundles cleanly into a frozen build — checked NOW, not at
+packaging time.
+
+| Option | Deps | Windows | Verdict |
+|---|---|---|---|
+| **`watchdog` 6.0.0** | new (79 KB wheel, pure-Python + ctypes) | native `ReadDirectoryChangesW` (`WindowsApiObserver`) | **CHOSEN** |
+| Polling (`os.scandir` every N s) | none | works | Fallback if watchdog failed the conditions — it didn't |
+
+**Maintenance (verified):** watchdog 6.0.0, actively maintained (Python 3.12+,
+FileSystemEvent dataclasses). The Windows observer started+stopped cleanly on
+the target machine.
+
+**Frozen bundling (verified NOW):** watchdog selects its observer dynamically, so
+PyInstaller's static analysis misses `watchdog.observers.read_directory_changes`;
+there is **no** contrib hook. But `collect_submodules("watchdog")` **does**
+capture it (confirmed) — the same one-line spec fix already used for websockets/
+pystray. Added to `packaging/anastasia.spec` (collect + explicit hidden imports)
+so the packaged build is ready.
+
+**Choice: watchdog**, imported lazily so a box without it benches only the
+filesystem watcher, never core. Disk/RAM/battery/window stay pure-ctypes (D-1.1)
+— watchdog earns its keep only for the event-driven directory watch, which
+polling can't do cheaply.
+
+**Revisit when:** watchdog's Windows backend regresses, or a watched root is a
+network/OneDrive path where ReadDirectoryChangesW is known-flaky (then poll that
+root specifically).

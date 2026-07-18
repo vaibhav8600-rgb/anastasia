@@ -91,6 +91,13 @@ EVENT_FIELDS = {
     # contents, and (system) never a path. `simulated` tags --simulate-event
     # injections so a soak's labeled dataset never mixes test and real.
     "watch_system":      ("kind", "value", "detail", "simulated"),
+    # Filesystem: BASENAMES only (name, parent-dir name) — never a full path.
+    "watch_fs":          ("kind", "name", "where", "simulated"),
+    # Active window: process name always; `title` present ONLY when the user
+    # opted into title capture (watch_window_titles) — the watcher omits it
+    # otherwise, so an absent opt-in means no title row here.
+    "app_switch":        ("app", "title", "simulated"),
+    "focus_session":     ("app", "minutes", "simulated"),
     # Written by the log about ITSELF when it had to drop events. An audit
     # trail that loses rows silently is worse than useless — it lies.
     "log_gap":           ("dropped", "reason"),

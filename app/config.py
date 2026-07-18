@@ -230,6 +230,18 @@ class AppConfig(BaseModel):
     watch_disk_min_pct: float = 10.0        # alert below; re-arms at +2 (hysteresis)
     watch_ram_max_pct: float = 90.0         # alert above; re-arms at -3
     watch_battery_min_pct: float = 20.0     # alert below (on battery); re-arms +5
+    # Filesystem watcher (watchdog). Defaults to Downloads; add project dirs.
+    watch_filesystem_enabled: bool = True
+    watch_paths: list = Field(default_factory=lambda: [str(Path.home() / "Downloads")])
+    watch_fs_exclude: list = Field(default_factory=lambda: [
+        ".git", "node_modules", "__pycache__", ".venv", "venv", "AppData",
+        "$RECYCLE.BIN", ".cache", ".idea", ".vs"])
+    # Active-window watcher. PRIVACY: window TITLES are opt-in (they carry doc
+    # names / email subjects); process names are always fine. Default OFF.
+    watch_window_enabled: bool = True
+    watch_window_interval_s: float = 5.0
+    watch_window_titles: bool = False
+    watch_focus_minutes: float = 20.0       # emit focus_session after this long in one app
 
     # UI
     animation_quality: str = "medium"    # "low" | "medium" | "high"

@@ -27,6 +27,9 @@ keyboard>=0.13.5           # global push-to-talk hotkey
 websockets>=16.0           # core <-> UI IPC (D-0.1)
 pystray>=0.19.5            # core-owned tray icon (D-0.2); optional — core runs without it
 
+# Phase 1 proactive loop
+watchdog>=6.0              # filesystem watcher (D-1.2); disk/RAM/battery/window use ctypes (D-1.1)
+
 # Dev / tests
 pytest>=8.0
 

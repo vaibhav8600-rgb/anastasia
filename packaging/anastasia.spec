@@ -58,13 +58,18 @@ hiddenimports = [
     "websockets.sync.client",
     "pystray",
     "pystray._win32",
+    # watchdog picks its observer dynamically; the Windows one is missed by
+    # static analysis (verified: no contrib hook, collect_submodules captures it).
+    "watchdog",
+    "watchdog.observers",
+    "watchdog.observers.read_directory_changes",
     "sounddevice",
     "numpy",
     "faster_whisper",
     "piper",
     "piper.config",
 ]
-for package in ("webview", "piper", "websockets", "pystray", "app.core"):
+for package in ("webview", "piper", "websockets", "pystray", "watchdog", "app.core"):
     try:
         hiddenimports.extend(collect_submodules(package))
     except Exception:
