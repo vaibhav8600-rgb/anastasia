@@ -176,3 +176,35 @@ Open Anna); it is a prompt, not a new capability.
 **Revisit when:** a future phase genuinely needs headless vision (e.g. a security
 watcher). That is a new consent card and a new dependency decision, not a quiet
 extension of this one.
+
+---
+
+## D-1.0 — Default hybrid-brain model (Groq) after the 70B deprecation
+
+**Groq deprecated `llama-3.3-70b-versatile` (and `llama-3.1-8b-instant`) on
+2026-06-17** for free/developer tiers
+([Groq deprecations](https://console.groq.com/docs/deprecations)). Still served
+during a transition window, but a shipped default on a deprecated model is a
+time-bomb for the hybrid brain — verified before it bit us mid-Phase-1.
+
+| Option | Tier | Notes | Verdict |
+|---|---|---|---|
+| **`openai/gpt-oss-120b`** | large (70B-class successor) | Groq's own recommended migration for the 70B; strong instruction-following | **CHOSEN default** |
+| `qwen/qwen3.6-27b` | mid | lighter/faster; a non-reasoning instruct model — a fallback if gpt-oss's reasoning format hurts planning-JSON reliability | Recorded alternative |
+| Keep `llama-3.3-70b-versatile` | — | deprecated; will 404 when retired | Rejected |
+
+**Choice: default `cloud_model = openai/gpt-oss-120b`,** applied via
+`_DEFAULT_MIGRATIONS` so users on the old default move forward while any custom
+choice is preserved. The field is config-driven (Settings → Cloud brain), so no
+code path hardcodes a model.
+
+**Watch (brain-swap risk):** gpt-oss is a *reasoning*-family model; if Groq
+surfaces analysis/reasoning text inline it could bleed into chat replies or
+break the planner's JSON extraction (`strip_thinking`/intent parsing). A human
+sanity pass (chat turn · command plan · multi-step proposal) gates this before
+building on it.
+
+**Revisit when:** the sanity pass shows planning-JSON regressions (→ switch
+default to `qwen/qwen3.6-27b` or adjust parsing), or Groq's small/large lineup
+changes again. The Phase-1 cloud-triage model is a *separate* config key
+(default `openai/gpt-oss-20b`), decided in 1B.

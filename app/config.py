@@ -65,6 +65,10 @@ _DEFAULT_MIGRATIONS = {
     "vision_max_edge": (1280, 2600),
     # gemini-2.5-flash now 404s for newly-issued keys (verified 2026-07).
     "vision_cloud_model": ("gemini-2.5-flash", "gemini-3-flash-preview"),
+    # Groq deprecated llama-3.3-70b-versatile on 2026-06-17 (free/dev tier).
+    # Migrate the default hybrid brain to its recommended successor; users who
+    # picked their own cloud model keep it. See DECISIONS D-1.0.
+    "cloud_model": ("llama-3.3-70b-versatile", "openai/gpt-oss-120b"),
 }
 
 
@@ -96,7 +100,9 @@ class AppConfig(BaseModel):
     # never logged, never sent to the frontend (masked in Settings).
     brain_mode: str = "hybrid"            # "hybrid" | "local_only"
     groq_api_key: str = ""
-    cloud_model: str = "llama-3.3-70b-versatile"
+    # llama-3.3-70b-versatile was deprecated by Groq 2026-06-17; gpt-oss-120b is
+    # its recommended successor. Config-driven — override in Settings. (D-1.0)
+    cloud_model: str = "openai/gpt-oss-120b"
     cloud_timeout_s: float = 8.0          # Groq answers ~1s; >8s = fail over
     # Privacy (8C): clipboard text may only reach the cloud with this opt-in.
     # Files, screenshots and raw audio NEVER leave the machine regardless.

@@ -73,7 +73,7 @@ def test_groq_payload_shape_and_auth_header(monkeypatch):
     assert cap["url"].startswith("https://api.groq.com/openai/v1/chat")
     assert cap["headers"]["Authorization"] == "Bearer gsk_TESTKEY12345678"
     p = cap["payload"]
-    assert p["model"] == "llama-3.3-70b-versatile"
+    assert p["model"] == config.cloud_model   # carries the CONFIGURED model, not a pinned name
     assert p["max_tokens"] == 300 and p["temperature"] == 0.1
     assert p["messages"][0]["content"] == "open x"
     assert cap["timeout"][1] == 8.0
