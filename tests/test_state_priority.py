@@ -74,3 +74,38 @@ def test_live_priority_still_applies():
     c.set_state("ready")
     assert c.ui.states == ["listening"]
     assert c.last_state == "listening"
+
+
+# ---- Gemini Live: native audio bypasses SpeechOutput, so drive the word ------
+
+def test_live_speaking_drives_the_status_word():
+    """In Live mode the resting state is 'listening (Live)'; the model's audio
+    stream must flip it to Speaking while she talks, then back."""
+    c = _controller()
+    c._live = object()
+    c.speech.speaking = False            # Live audio is not SpeechOutput
+    c._on_live_speaking(True)
+    assert c.ui.states[-1] == "speaking"
+    c._on_live_speaking(False)
+    assert c.ui.states[-1] == "listening"
+
+
+def test_live_speaking_is_a_noop_without_a_session():
+    c = _controller()
+    c._live = None
+    c._on_live_speaking(True)
+    assert c.ui.states == []
+
+
+def test_live_model_speaking_transitions_dedup():
+    """The drain loop calls _set_model_speaking every chunk / every idle beat;
+    on_speaking must fire only on the actual edges."""
+    from app.voice.live_engine import LiveEngine
+    calls = []
+    eng = LiveEngine(make_config(), None, None, None, None,
+                     on_speaking=calls.append)
+    eng._set_model_speaking(True)
+    eng._set_model_speaking(True)        # still speaking — no repeat
+    eng._set_model_speaking(False)
+    eng._set_model_speaking(False)       # still idle — no repeat
+    assert calls == [True, False]

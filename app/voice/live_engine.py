@@ -52,7 +52,7 @@ class LiveEngine:
     def __init__(self, config, agent, history, pipeline, selector, *,
                  memory=None, show_user=None, show_anna=None,
                  show_result=None, on_failure=None, on_cost=None,
-                 on_idle=None, notify=None,
+                 on_idle=None, notify=None, on_speaking=None,
                  session_factory=None, player=None):
         self.config = config
         self.agent = agent
@@ -67,6 +67,11 @@ class LiveEngine:
         self.on_cost = on_cost         # callback({in_s, out_s, usd}) ~1/s (10D)
         self.on_idle = on_idle         # callback() — idle cap hit, close me
         self.notify = notify or (lambda t: None)   # soft-cap warning line
+        # callback(active): the MODEL is producing audio (speaking) vs idle
+        # (listening). Native Live audio bypasses SpeechOutput, so the status
+        # line needs this to say "Speaking" instead of a stuck "Listening".
+        self.on_speaking = on_speaking or (lambda active: None)
+        self._model_speaking = False
         self._session_factory = session_factory
         self._player = player
 
@@ -199,13 +204,28 @@ class LiveEngine:
             try:
                 chunk = self._out_q.get(timeout=0.2)
             except queue.Empty:
+                # No audio for a beat: the model's turn is done playing → the
+                # status can drop back to "listening (Live)". (The 0.2s timeout
+                # is the debounce that bridges between-chunk gaps.)
+                self._set_model_speaking(False)
                 continue
             if chunk is None:
+                self._set_model_speaking(False)
                 return
+            self._set_model_speaking(True)   # audio is flowing → she's speaking
             try:
                 self._get_player().play_chunk(chunk)
             except Exception as e:
                 devlog.warn(f"live playback: {' '.join(str(e).split())[:120]}")
+
+    def _set_model_speaking(self, active: bool) -> None:
+        if active == self._model_speaking:
+            return
+        self._model_speaking = active
+        try:
+            self.on_speaking(active)
+        except Exception:
+            pass
 
     def _on_interrupted(self) -> None:
         """Barge-in: the user spoke over Anna — drop queued audio instantly."""
@@ -216,6 +236,7 @@ class LiveEngine:
             pass
         if self._player is not None:
             self._player.stop()
+        self._set_model_speaking(False)   # she was cut off → back to listening
         self._flush_anna()
 
     # ---------------------------------------------------------- transcripts

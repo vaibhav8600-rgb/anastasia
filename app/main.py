@@ -825,6 +825,7 @@ class Controller:
                           on_failure=self._on_live_failure,
                           on_cost=self._on_live_cost,
                           on_idle=self._on_live_idle,
+                          on_speaking=self._on_live_speaking,
                           notify=self.show_info)
         self._live = live   # set before connect so a tap can abort it
 
@@ -956,6 +957,18 @@ class Controller:
         the running session-cost estimate to it)."""
         if hasattr(self.ui, "dispatch"):
             self.ui.dispatch("live_streaming", {"active": bool(active)})
+
+    def _on_live_speaking(self, active: bool) -> None:
+        """Gemini Live's native audio bypasses SpeechOutput, so the status word
+        would sit on 'listening (Live)' even while she talks. Drive it directly
+        from the model's audio-out stream: Speaking while she talks, back to
+        Listening (Live) when the turn's audio has drained (or she's cut off)."""
+        if self._live is None:
+            return
+        if active:
+            self.set_state("speaking", "Live")
+        else:
+            self.set_state("listening", "Live — just talk")
 
     def _on_live_cost(self, payload: dict) -> None:
         """~1/s from the live engine: session audio minutes + cost estimate
