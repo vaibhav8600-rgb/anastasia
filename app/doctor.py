@@ -168,4 +168,18 @@ def run_doctor() -> int:
     except Exception as e:
         _line(True, f"Presence probe unavailable: {e}", warn=True)
 
+    # Salience rules: loaded cleanly, or running on the last-good table after a
+    # malformed live edit (fail-safe — never crashes, never silently zeroes).
+    try:
+        from app.proactive.salience import SalienceEngine
+        st = SalienceEngine(seed=False).status()
+        if st["error"]:
+            _line(False, f"Salience rules MALFORMED — using last-good "
+                         f"({st['rules']} rules). Fix {st['path']}: {st['error']}",
+                  warn=True)
+        else:
+            _line(True, f"Salience rules loaded ({st['rules']} rules)")
+    except Exception as e:
+        _line(True, f"Salience rules probe unavailable: {e}", warn=True)
+
     return 0 if ok else 1

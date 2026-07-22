@@ -266,3 +266,50 @@ polling can't do cheaply.
 **Revisit when:** watchdog's Windows backend regresses, or a watched root is a
 network/OneDrive path where ReadDirectoryChangesW is known-flaky (then poll that
 root specifically).
+
+## D-1.3 — Salience rules format: TOML via stdlib `tomllib`
+
+The local salience table (event kind → score) is a config file the user
+**hand-annotates live during the soak**, so the format had hard requirements:
+comments (for the annotations), read-only parsing (a live-edit typo must not
+execute), and no new dependency. The user set the tie-break: TOML if our real
+Python floor is 3.11+, YAML-with-a-frozen-bundling-check if we genuinely need
+3.10; explicitly **not** JSON (no comments) and **not** a `.py` table
+(executable config; a typo would crash hot-reload).
+
+**Python floor — confirmed 3.11+.** The repo pins no `python_requires`; the
+"3.10+" in the README was aspirational text, and the only environment this has
+ever run/tested in is the 3.13.5 venv. Nothing depends on 3.10. So the floor is
+raised to **3.11** (README line 22 updated in this commit), which makes
+`tomllib` — **stdlib since 3.11** — available with zero dependency.
+
+| Option | Deps | Comments | Executable? | Verdict |
+|---|---|---|---|---|
+| **TOML / `tomllib`** | none (stdlib 3.11+) | yes | no (read-only parse) | **CHOSEN** |
+| YAML / `pyyaml` | new dep + frozen-bundle hook | yes | no | Only if floor were 3.10 — it isn't |
+| JSON | none | **no** | no | Rejected — user annotates the file |
+| `.py` table | none | yes | **yes** | Rejected — a live-edit typo crashes hot-reload |
+
+**Fail-safe hot-reload (rider 2):** a malformed edit **keeps the last-good
+table**, sets a doctor-visible error, and never crashes or zeroes. On a
+malformed *first* load (no last-good yet) it falls back to the embedded
+`DEFAULT_RULES_TOML` so scores never silently collapse to the default. mtime is
+stamped on the bad read too, so the same broken file isn't re-reported on every
+event.
+
+**Provenance (rider 1):** `score()` returns `(score, rule)`, stamped onto the
+event as `payload["score"]`/`payload["rule"]`, so the feed shows *which* rule
+fired, not a bare number — calibration needs the reason.
+
+**Unknown kinds (rider 3):** an event no rule covers scores `2` with
+rule `"default"` — log-only, fail-quiet; a new watcher kind is never dropped and
+never shouted about.
+
+**Trust ratchet (unchanged):** these are local rules only. In 1B, cloud triage
+may *score*, but only a local rule can push an event to speak-tier. The embedded
+`DEFAULT_RULES_TOML` is the source of truth; the seeded on-disk copy is
+gitignored (it's user-edited, per-install).
+
+**Revisit when:** the floor ever needs to drop to 3.10 (then YAML + bundling
+hook), or scores need to be conditional on payload values rather than a flat
+kind→score table (then the parser grows, not the format).

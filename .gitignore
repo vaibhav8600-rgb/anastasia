@@ -25,3 +25,6 @@ app/data/events.sqlite-shm
 app/data/events*.jsonl
 # Per-install IPC secret — must never ship in a repo
 app/data/ipc_token
+
+# Phase 1 seeded rules (embedded default is the source of truth; this copy is user-edited)
+app/data/salience_rules.toml

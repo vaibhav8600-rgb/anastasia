@@ -19,7 +19,7 @@ say) · [HANDOFF.md](HANDOFF.md) (development state).
 - Windows 10/11 + **Microsoft Edge WebView2 runtime** (preinstalled on most
   systems; otherwise the app shows a download link:
   https://developer.microsoft.com/en-us/microsoft-edge/webview2/)
-- Python 3.10+ (tested on 3.13)
+- Python 3.11+ (uses stdlib tomllib; developed and tested on 3.13)
 - ~6 GB free RAM while running (Whisper base + llama3.2:3b)
 - A microphone (optional — typing works too)
 

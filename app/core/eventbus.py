@@ -172,10 +172,11 @@ class _Subscriber:
 
 
 class EventBus:
-    def __init__(self, *, eventlog=None, queue_max=QUEUE_MAX,
+    def __init__(self, *, eventlog=None, scorer=None, queue_max=QUEUE_MAX,
                  coalesce_ms=COALESCE_MS, max_hold_ms=MAX_HOLD_MS,
                  clock=time.monotonic):
         self._eventlog = eventlog
+        self._scorer = scorer            # callable(event) -> (score, rule); optional
         self._queue_max = queue_max
         self._coalesce_ms = coalesce_ms
         self._max_hold_ms = max_hold_ms
@@ -201,6 +202,16 @@ class EventBus:
         every subscriber (each coalesces + back-pressures on its own)."""
         ev = Event(type=type, source=source, payload=dict(payload or {}),
                    key=str(key or ""), salience=salience)
+        # Score BEFORE the tee so the score+rule land in the audit log and the
+        # feed (a scorer that throws never blocks the event).
+        if self._scorer is not None:
+            try:
+                score, rule = self._scorer(ev)
+                ev.salience = score
+                ev.payload["score"] = score
+                ev.payload["rule"] = rule
+            except Exception:
+                pass
         self._tee(ev)
         with self._lock:
             subs = list(self._subs)
