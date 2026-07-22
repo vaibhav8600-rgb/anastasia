@@ -242,6 +242,14 @@ class AppConfig(BaseModel):
     watch_window_interval_s: float = 5.0
     watch_window_titles: bool = False
     watch_focus_minutes: float = 20.0       # emit focus_session after this long in one app
+    # Presence watcher: idle/away (GetLastInputInfo) + lock/unlock (WTS).
+    watch_presence_enabled: bool = True
+    presence_interval_s: float = 15.0
+    presence_idle_minutes: float = 5.0      # emit user_idle past this
+    # Clock watcher: time-of-day markers (briefing hook for 1B).
+    watch_clock_enabled: bool = True
+    clock_interval_s: float = 30.0
+    briefing_time: str = "08:00"            # local HH:MM
 
     # UI
     animation_quality: str = "medium"    # "low" | "medium" | "high"

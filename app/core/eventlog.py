@@ -98,6 +98,9 @@ EVENT_FIELDS = {
     # otherwise, so an absent opt-in means no title row here.
     "app_switch":        ("app", "title", "simulated"),
     "focus_session":     ("app", "minutes", "simulated"),
+    # Presence: a kind + (idle) minutes only — no window titles, no app names.
+    "presence":          ("kind", "minutes", "simulated"),
+    "clock":             ("kind", "time", "simulated"),
     # Written by the log about ITSELF when it had to drop events. An audit
     # trail that loses rows silently is worse than useless — it lies.
     "log_gap":           ("dropped", "reason"),

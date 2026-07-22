@@ -8,12 +8,17 @@ Nothing here runs unless `proactive_enabled` is on (default OFF).
 def _registry():
     """kind -> the watcher class that owns it (for --simulate-event)."""
     from app.watchers.active_window import ActiveWindowWatcher
+    from app.watchers.clock import ClockWatcher
     from app.watchers.filesystem import FilesystemWatcher
+    from app.watchers.presence import PresenceWatcher
     from app.watchers.system import SystemWatcher
     return {
         SystemWatcher: ("disk_low", "ram_high", "battery_low", "battery_full"),
         FilesystemWatcher: ("file_added", "file_changed"),
         ActiveWindowWatcher: ("app_switch", "focus_session"),
+        PresenceWatcher: ("user_idle", "user_returned",
+                          "session_locked", "session_unlocked"),
+        ClockWatcher: ("briefing_time",),
     }
 
 

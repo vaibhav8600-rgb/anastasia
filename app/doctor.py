@@ -157,4 +157,15 @@ def run_doctor() -> int:
     except Exception as e:
         _line(True, f"System metrics probe unavailable: {e}", warn=True)
 
+    # Presence: can we detect screen lock/unlock, or only idle (the degrade)?
+    try:
+        from app.watchers.presence import lock_detection_available
+        if lock_detection_available():
+            _line(True, "Presence: lock/unlock + idle both available")
+        else:
+            _line(True, "Presence: idle-only (screen-lock detection unavailable — "
+                        "a locked screen counts as away)", warn=True)
+    except Exception as e:
+        _line(True, f"Presence probe unavailable: {e}", warn=True)
+
     return 0 if ok else 1
